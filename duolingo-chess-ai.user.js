@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Duolingo Chess Solver & Auto-Match Bot (Fast GM Edition)
 // @namespace    duochess-lite
-// @version      3.3.0
-// @description  Fast, minimal Duolingo Chess bot: Auto-continue, auto-start next game, smooth pointer dragging, big stat numbers, accurate pawn promotion, and endless auto-match loop.
+// @version      3.6.0
+// @description  Instant continue & auto-match next game, dual keyboard & React fiber click engine, sub-15 move wins, big numbers, and silky drag pill.
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
@@ -35,12 +35,12 @@ const SOL_CFG = {
     clickDelay:      50,
     moveDelay:       400,
     enemyDelay:      650,
-    continueDelay:   350,
+    continueDelay:   250,
     autoContinue:    true,
     flipped:         false,
 };
 
-const STORE_KEY = "duochess.v33.settings";
+const STORE_KEY = "duochess.v36.settings";
 
 function loadSettings(){
     try{
@@ -139,7 +139,6 @@ function isElementVisible(el) {
     if (el.closest("#dc-pill")) return false;
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return false;
-    if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) return false;
     const cs = window.getComputedStyle(el);
     return cs.display !== "none" && cs.visibility !== "hidden" && cs.opacity !== "0";
 }
@@ -148,38 +147,67 @@ function isForbiddenButton(el) {
     if (!el) return true;
     const test = (el.getAttribute("data-test") || "").toLowerCase();
     const aria = (el.getAttribute("aria-label") || "").toLowerCase();
-    return test.includes("quit-button") || test.includes("close-button") || aria === "quit" || aria === "close" || aria === "leave";
+    return test === "quit-button" || test === "close-button" || aria === "quit" || aria === "close" || aria === "leave";
 }
 
+// React Fiber & Native Click Dispatcher
 function simulateFullClick(el) {
     if (!el || isForbiddenButton(el)) return false;
     try {
+        // 1. Direct native click
+        if (typeof el.click === "function") el.click();
+
+        // 2. React fiber internal handler trigger
+        const rKey = Object.keys(el).find(k => k.startsWith("__reactProps$") || k.startsWith("__reactEventHandlers$") || k.startsWith("__reactFiber$"));
+        if (rKey && el[rKey]) {
+            const props = el[rKey].memoizedProps || el[rKey];
+            if (typeof props?.onClick === "function") {
+                try { props.onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: el, currentTarget: el }); } catch (_) {}
+            }
+        }
+
+        // 3. Pointer & Mouse events with coordinates
         const r = el.getBoundingClientRect();
         const x = r.left + r.width / 2;
         const y = r.top + r.height / 2;
         const opts = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window };
-        
+
         if (typeof PointerEvent === "function") {
             el.dispatchEvent(new PointerEvent("pointerdown", { ...opts, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
-        }
-        el.dispatchEvent(new MouseEvent("mousedown", { ...opts, button: 0, buttons: 1 }));
-        
-        if (typeof PointerEvent === "function") {
             el.dispatchEvent(new PointerEvent("pointerup", { ...opts, button: 0, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true }));
         }
+        el.dispatchEvent(new MouseEvent("mousedown", { ...opts, button: 0, buttons: 1 }));
         el.dispatchEvent(new MouseEvent("mouseup", { ...opts, button: 0, buttons: 0 }));
         el.dispatchEvent(new MouseEvent("click", { ...opts, button: 0, buttons: 0 }));
-        
-        if (typeof el.click === "function") el.click();
 
-        const topEl = document.elementFromPoint(x, y);
-        if (topEl && topEl !== el && !topEl.closest("#dc-pill")) {
-            if (typeof topEl.click === "function") topEl.click();
+        // 4. Click any inner span/button
+        const inner = el.querySelector("span, div, p");
+        if (inner && typeof inner.click === "function") {
+            try { inner.click(); } catch (_) {}
         }
         return true;
     } catch (_) {
         return false;
     }
+}
+
+// Global Keyboard Enter & Space for Duolingo Modals / Footers
+function pressGlobalAdvanceKeys() {
+    try {
+        for (const key of ["Enter", " "]) {
+            const code = key === " " ? "Space" : "Enter";
+            const keyCode = key === " " ? 32 : 13;
+            const evOpts = { key, code, keyCode, which: keyCode, bubbles: true, cancelable: true, composed: true, view: window };
+            
+            window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+            document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+            if (document.body) document.body.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+            
+            window.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+            document.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+            if (document.body) document.body.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+        }
+    } catch (_) {}
 }
 
 async function clickSquare(sq,insetRatio,flipped,pressMs=75) {
@@ -245,7 +273,7 @@ function isPawnPromotion(fen, uci) {
     return (from[1] === "7" && to[1] === "8") || (from[1] === "2" && to[1] === "1");
 }
 
-// Target Only True Queen Promotion Elements (Zero Risk of Clicking Quit)
+// Target Only True Queen Promotion Elements
 function autoClickPromotion() {
     const queenSelectors = [
         `[data-piece="queen"]`, `[data-piece="q"]`, `[data-piece="Q"]`,
@@ -538,6 +566,9 @@ function onMatchData(data){
         saveSettings();
         renderPanel();
         advanceFlow();
+        setTimeout(advanceFlow, 250);
+        setTimeout(advanceFlow, 600);
+        setTimeout(advanceFlow, 1000);
         return;
     }
 
@@ -810,7 +841,7 @@ async function solveAll(){
             renderPanel();
             await sleep(200);
         }
-        await sleep(350);
+        await sleep(300);
         advanceFlow();
     } finally {
         SOL_STATE.solving=false;
@@ -902,19 +933,24 @@ async function recoverState() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  MULTI-STEP CONTINUE & START MATCH ADVANCE FLOW
+//  BULLETPROOF ADVANCE FLOW & NEXT MATCH AUTO-START
 // ══════════════════════════════════════════════════════════════════════════════
 
 function advanceFlow() {
     if (!BOT_CFG.autoPlay) return false;
 
-    if (autoClickPromotion()) return true;
+    // Always dispatch global Enter & Space (instantly triggers Duolingo bottom bar Continue)
+    pressGlobalAdvanceKeys();
 
-    const candidates = Array.from(document.querySelectorAll('button, div[role="button"], a[role="button"], a[class*="button" i]'));
+    // Scan all buttons & interactive elements on screen
+    const candidates = Array.from(document.querySelectorAll(
+        'button, [role="button"], a, div[data-test*="button" i], div[data-test*="next" i], div[data-test*="continue" i]'
+    ));
+
     const keywords = [
         "continue", "tiếp tục", "tiep tuc", "next", "claim", "claim reward", "claim xp",
         "play against oscar", "play oscar", "start match", "start game", "play match",
-        "play again", "rematch", "start lesson", "start", "play", "let's go", "done", "check", "got it", "finish", "practice"
+        "play again", "rematch", "start lesson", "start", "play", "let's go", "done", "check", "got it", "finish", "practice", "ready"
     ];
 
     for (const btn of candidates) {
@@ -924,17 +960,22 @@ function advanceFlow() {
         const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
         const txt = (btn.innerText || btn.textContent || "").trim().toLowerCase();
 
+        // 1. Direct Duolingo action attributes
         if (dataTest.includes("player-next") ||
             dataTest.includes("player-start-button") ||
             dataTest.includes("continue-button") ||
             dataTest.includes("claim-button") ||
             dataTest.includes("start-button") ||
             dataTest.includes("next-button") ||
-            dataTest.includes("bottom-nav-next-button")) {
+            dataTest.includes("bottom-nav-next-button") ||
+            dataTest.includes("play-button") ||
+            dataTest.includes("rematch-button") ||
+            dataTest.includes("session-end-button")) {
             simulateFullClick(btn);
             return true;
         }
 
+        // 2. Direct Text matches (e.g. "CONTINUE", "PLAY AGAIN")
         for (const kw of keywords) {
             if (txt === kw || txt.includes(kw) || ariaLabel.includes(kw) || dataTest.includes(kw.replace(/\s+/g, "-"))) {
                 simulateFullClick(btn);
@@ -1130,16 +1171,18 @@ async function _autoPollLoop(){
         await sleep(150);
         if(!BOT_CFG.autoPlay) continue;
 
+        // 1. Dismiss any promotion modals
         autoClickPromotion();
 
-        const canvas = findCanvas();
-        const hasOverlay = document.querySelector('[data-test*="end" i], [data-test*="game-over" i], [data-test*="modal" i], .session-end');
-
-        if(!canvas || hasOverlay || (!BOT_S.matchId && !SOL_STATE.challenges.length)){
+        // 2. Aggressively advance flow (Continue, Claim, Next, Start Match, Rematch)
+        if(BOT_S.status !== "playing" && BOT_S.status !== "thinking"){
             advanceFlow();
         }
 
+        const canvas = findCanvas();
+
         if(canvas){
+            // Auto-recover active match or session if state is lost
             if(!BOT_S.matchId && !SOL_STATE.challenges.length){
                 await recoverState();
             }
