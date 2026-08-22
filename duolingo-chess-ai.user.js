@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Duolingo Chess Solver & Auto-Match Bot (Fast GM Edition)
 // @namespace    duochess-lite
-// @version      3.0.0
-// @description  Fast, minimal Duolingo Chess bot: Sub-15 move wins, clean non-intrusive status pill, automatic pawn promotion, accurate move counter, and seamless auto-match loop.
+// @version      3.1.0
+// @description  Fast, minimal Duolingo Chess bot: Big stat numbers, smooth draggable UI, universal touch/mouse promotion modal clicker, sub-15 move wins, and endless loop.
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
@@ -40,7 +40,7 @@ const SOL_CFG = {
     flipped:         false,
 };
 
-const STORE_KEY = "duochess.v30.settings";
+const STORE_KEY = "duochess.v31.settings";
 
 function loadSettings(){
     try{
@@ -152,11 +152,22 @@ function simulateFullClick(el) {
         const y = r.top + r.height / 2;
         const opts = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window };
         
+        // Touch events
+        if (typeof TouchEvent === "function") {
+            try {
+                const touch = new Touch({ identifier: 1, target: el, clientX: x, clientY: y, screenX: x, screenY: y, pageX: x, pageY: y });
+                el.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] }));
+                el.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [touch] }));
+            } catch (_) {}
+        }
+
+        // Pointer & Mouse down
         if (typeof PointerEvent === "function") {
             el.dispatchEvent(new PointerEvent("pointerdown", { ...opts, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
         }
         el.dispatchEvent(new MouseEvent("mousedown", { ...opts, button: 0, buttons: 1 }));
         
+        // Pointer & Mouse up + Click
         if (typeof PointerEvent === "function") {
             el.dispatchEvent(new PointerEvent("pointerup", { ...opts, button: 0, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true }));
         }
@@ -165,6 +176,7 @@ function simulateFullClick(el) {
         
         if (typeof el.click === "function") el.click();
 
+        // Also fire on topmost element at coordinate if different
         const topEl = document.elementFromPoint(x, y);
         if (topEl && topEl !== el && !topEl.closest("#dc-pill")) {
             if (typeof PointerEvent === "function") {
@@ -245,9 +257,10 @@ function isPawnPromotion(fen, uci) {
     return (from[1] === "7" && to[1] === "8") || (from[1] === "2" && to[1] === "1");
 }
 
-// Instant Auto-Click for Promotion Modal / Picker (Queen Selection)
+// Universal Auto-Click for Promotion Modal / Picker (Queen Selection)
 function autoClickPromotion() {
-    const queenSelectors = [
+    // 1. Dedicated Queen attributes and selectors
+    const directSelectors = [
         `[data-piece="queen"]`, `[data-piece*="queen" i]`, `[data-piece="q"]`, `[data-piece="Q"]`,
         `[data-test*="promotion-queen" i]`, `[data-test*="promote-queen" i]`, `[data-test*="queen" i]`,
         `button[aria-label*="queen" i]`, `button[aria-label*="Hậu" i]`, `button[aria-label*="Dama" i]`, `button[aria-label*="Dame" i]`,
@@ -256,35 +269,42 @@ function autoClickPromotion() {
         `[class*="queen" i]`, `[id*="queen" i]`
     ];
 
-    for (const sel of queenSelectors) {
+    for (const sel of directSelectors) {
         const els = document.querySelectorAll(sel);
         for (const el of els) {
             if (isElementVisible(el)) {
                 simulateFullClick(el);
-                if (el.parentElement && isElementVisible(el.parentElement)) {
-                    simulateFullClick(el.parentElement);
-                }
+                if (el.parentElement && isElementVisible(el.parentElement)) simulateFullClick(el.parentElement);
                 return true;
             }
         }
     }
 
+    // 2. Scan Any Open Modal / Dialog / Portal / Overlay
     const modalContainers = document.querySelectorAll(
-        'div[role="dialog"], div[class*="modal" i], div[class*="dialog" i], div[class*="drawer" i], div[class*="popover" i], div[class*="overlay" i], div[class*="promotion" i], div[data-test*="modal" i], div[data-test*="promotion" i]'
+        'dialog, div[role="dialog"], div[class*="modal" i], div[class*="dialog" i], div[class*="drawer" i], div[class*="popover" i], div[class*="overlay" i], div[class*="promotion" i], div[class*="portal" i], div[data-test*="modal" i], div[data-test*="promotion" i], div[data-test*="dialog" i]'
     );
 
     for (const modal of modalContainers) {
         if (!isElementVisible(modal)) continue;
 
-        const candidates = modal.querySelectorAll('button, div[role="button"], li[role="button"], div[tabindex="0"], div[class*="piece" i], img, svg');
-        for (const item of candidates) {
+        // Queen is ALWAYS the 1st interactive option in promotion modals
+        const items = modal.querySelectorAll('button, div[role="button"], li[role="button"], div[tabindex="0"], div[class*="piece" i], div[class*="choice" i], img, svg');
+        for (const item of items) {
             if (isElementVisible(item)) {
                 simulateFullClick(item);
-                if (item.parentElement && isElementVisible(item.parentElement)) {
-                    simulateFullClick(item.parentElement);
-                }
+                if (item.parentElement && isElementVisible(item.parentElement)) simulateFullClick(item.parentElement);
                 return true;
             }
+        }
+    }
+
+    // 3. Scan Any floating element containing SVG or Image pieces
+    const floatPieces = document.querySelectorAll('button:has(svg), button:has(img), div[role="button"]:has(svg), div[role="button"]:has(img)');
+    for (const fp of floatPieces) {
+        if (isElementVisible(fp) && !fp.closest("#dc-pill")) {
+            simulateFullClick(fp);
+            return true;
         }
     }
 
@@ -954,35 +974,43 @@ function advanceFlow() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  SUPER CLEAN & MINIMAL FIXED STATUS PILL (NO DRAG, NO CONSOLE, NO SLOP)
+//  MINIMAL DRAGGABLE STATUS PILL WITH LARGE STAT NUMBERS
 // ══════════════════════════════════════════════════════════════════════════════
 
 let _panel = null;
 
 const STYLE = `
 #dc-pill{
-    position:fixed;bottom:16px;right:16px;
-    background:#111827;border:1px solid #374151;border-radius:10px;
-    padding:8px 12px;font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size:11px;color:#f3f4f6;z-index:2147483647;user-select:none;
-    box-shadow:0 4px 14px rgba(0,0,0,0.5);display:flex;flex-direction:column;gap:6px;min-width:170px;
+    position:fixed;bottom:20px;right:20px;
+    background:rgba(15,23,42,0.96);border:1px solid rgba(255,255,255,0.12);
+    border-radius:12px;padding:10px 14px;
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color:#f8fafc;z-index:2147483647;user-select:none;
+    box-shadow:0 8px 24px rgba(0,0,0,0.5);
+    display:flex;flex-direction:column;gap:8px;
+    min-width:190px;cursor:grab;touch-action:none;
 }
+#dc-pill.dragging{cursor:grabbing;opacity:0.9;}
 .dc-header{display:flex;align-items:center;justify-content:space-between;gap:8px;}
-.dc-brand{font-weight:800;color:#58cc02;font-size:11px;letter-spacing:0.5px;}
+.dc-brand{font-weight:900;color:#58cc02;font-size:12px;letter-spacing:0.5px;}
 .dc-status{
-    font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;
-    background:#374151;color:#9ca3af;text-transform:uppercase;
+    font-size:10px;font-weight:800;padding:2px 6px;border-radius:4px;
+    background:#334155;color:#94a3b8;text-transform:uppercase;
 }
 .dc-status.active{background:#15803d;color:#fff;}
 .dc-status.thinking{background:#b45309;color:#fff;}
-.dc-controls{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.dc-body-row{display:flex;align-items:center;justify-content:space-between;gap:12px;}
 .dc-btn{
     background:#58cc02;color:#000;border:none;border-radius:6px;
-    padding:4px 8px;font-size:10px;font-weight:700;cursor:pointer;
+    padding:6px 10px;font-size:11px;font-weight:800;cursor:pointer;
 }
-.dc-btn.off{background:#374151;color:#9ca3af;}
-.dc-stats{display:flex;gap:8px;font-size:10px;color:#9ca3af;}
-.dc-stats b{color:#fff;}
+.dc-btn.off{background:#334155;color:#94a3b8;}
+.dc-stat-box{display:flex;align-items:center;gap:10px;}
+.dc-stat-item{display:flex;flex-direction:column;align-items:center;}
+.dc-stat-num{font-size:16px;font-weight:900;line-height:1;}
+.dc-stat-num.win{color:#58cc02;}
+.dc-stat-num.mov{color:#38bdf8;}
+.dc-stat-label{font-size:8px;color:#64748b;font-weight:700;text-transform:uppercase;margin-top:2px;}
 `;
 
 function injectCSS(){
@@ -1005,25 +1033,87 @@ function createPanel(){
         <span class="dc-brand">DUOCHESS</span>
         <span class="dc-status" id="dc-st">${esc(BOT_S.status)}</span>
     </div>
-    <div class="dc-controls">
+    <div class="dc-body-row">
         <button id="dc-tg" class="dc-btn ${BOT_CFG.autoPlay?'':'off'}">${BOT_CFG.autoPlay?'AUTO: ON':'AUTO: OFF'}</button>
-        <div class="dc-stats">
-            <span>Wins: <b id="dc-w">${BOT_S.matchesWon}</b></span>
-            <span>Moves: <b id="dc-m">${BOT_S.movesPlayed}</b></span>
+        <div class="dc-stat-box">
+            <div class="dc-stat-item">
+                <span class="dc-stat-num win" id="dc-w">${BOT_S.matchesWon}</span>
+                <span class="dc-stat-label">Wins</span>
+            </div>
+            <div class="dc-stat-item">
+                <span class="dc-stat-num mov" id="dc-m">${BOT_S.movesPlayed}</span>
+                <span class="dc-stat-label">Moves</span>
+            </div>
         </div>
     </div>`;
 
     document.body.appendChild(_panel);
 
     const tg=_panel.querySelector("#dc-tg");
-    tg.addEventListener("click",()=>{
+    tg.addEventListener("click",(e)=>{
+        e.stopPropagation();
         BOT_CFG.autoPlay=!BOT_CFG.autoPlay;
         saveSettings();
         tg.classList.toggle("off",!BOT_CFG.autoPlay);
         tg.textContent=BOT_CFG.autoPlay?'AUTO: ON':'AUTO: OFF';
     });
 
+    makeDraggable(_panel);
     renderPanel();
+}
+
+function makeDraggable(el){
+    let isDown = false, startX, startY, origLeft, origTop;
+    
+    // Restore saved pos if exists
+    try{
+        const saved = JSON.parse(localStorage.getItem(STORE_KEY+"_pos")||"null");
+        if(saved && typeof saved.left === "number" && typeof saved.top === "number"){
+            el.style.left = Math.min(window.innerWidth - 100, Math.max(10, saved.left)) + "px";
+            el.style.top = Math.min(window.innerHeight - 50, Math.max(10, saved.top)) + "px";
+            el.style.bottom = "auto"; el.style.right = "auto";
+        }
+    }catch(_){}
+
+    el.addEventListener("mousedown", (e)=>{
+        if(e.target.tagName === "BUTTON") return;
+        isDown = true;
+        el.classList.add("dragging");
+        startX = e.clientX;
+        startY = e.clientY;
+        const rect = el.getBoundingClientRect();
+        origLeft = rect.left;
+        origTop = rect.top;
+        
+        const onMove = (ev)=>{
+            if(!isDown) return;
+            ev.preventDefault();
+            const dx = ev.clientX - startX;
+            const dy = ev.clientY - startY;
+            const newL = Math.max(10, Math.min(window.innerWidth - el.offsetWidth - 10, origLeft + dx));
+            const newT = Math.max(10, Math.min(window.innerHeight - el.offsetHeight - 10, origTop + dy));
+            el.style.left = newL + "px";
+            el.style.top = newT + "px";
+            el.style.bottom = "auto";
+            el.style.right = "auto";
+        };
+        
+        const onUp = ()=>{
+            if(isDown){
+                isDown = false;
+                el.classList.remove("dragging");
+                window.removeEventListener("mousemove", onMove);
+                window.removeEventListener("mouseup", onUp);
+                try{
+                    const r = el.getBoundingClientRect();
+                    localStorage.setItem(STORE_KEY+"_pos", JSON.stringify({left: r.left, top: r.top}));
+                }catch(_){}
+            }
+        };
+
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+    });
 }
 
 function renderPanel(){
