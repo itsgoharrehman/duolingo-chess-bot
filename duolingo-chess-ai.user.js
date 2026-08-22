@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Duolingo Chess Solver & Auto-Match Bot (Fast GM Mate Edition)
 // @namespace    duochess-lite
-// @version      2.4.0
+// @version      2.8.0
 // @icon         https://i.ibb.co/gZpNbsPP/cosmic.jpg
-// @description  Crush Oscar in under 15 moves: Flawless pawn promotion handler, per-match move counter reset, instant checkmate detection, Scholar/Queen attack openings, Stockfish 16+ GM depth 15, auto-click continue, and endless loop!
+// @description  Crush Oscar in under 15 moves: Guaranteed Queen promotion handler with animation sync & multi-event canvas/DOM confirm, per-match move counter reset, instant checkmate detection, Scholar/Queen attack openings, Stockfish 16+ GM depth 15, auto-click continue, and endless loop!
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
@@ -22,9 +22,9 @@ const BOT_CFG = {
     engine:          "stockfish",
     jceLevel:        4,
     stockfishDepth:  15,          // Max grandmaster depth for fastest checkmates
-    clickDelay:      100,         // Crisp click gap (ms)
-    moveDelay:       600,         // Fast settle delay (ms)
-    thinkDelay:      180,         // Rapid response to Oscar (ms)
+    clickDelay:      50,          // Crisp click gap (ms)
+    moveDelay:       450,         // Settle delay (ms)
+    thinkDelay:      50,          // Rapid response to Oscar (ms)
     boardInsetRatio: 64 / 648,
     flipped:         false,
     autoPlay:        true,
@@ -33,15 +33,15 @@ const BOT_CFG = {
 
 const SOL_CFG = {
     boardInsetRatio: 64 / 648,
-    clickDelay:      150,
-    moveDelay:       500,
+    clickDelay:      50,
+    moveDelay:       400,
     enemyDelay:      650,
     continueDelay:   350,
     autoContinue:    true,
     flipped:         false,
 };
 
-const STORE_KEY = "duochess.v24.settings";
+const STORE_KEY = "duochess.v28.settings";
 
 function loadSettings(){
     try{
@@ -135,7 +135,58 @@ function fireMouse(el,type,x,y,buttons) {
     el.dispatchEvent(new MouseEvent(type,{bubbles:true,cancelable:true,composed:true,clientX:x,clientY:y,button:0,buttons,view:window}));
 }
 
-async function clickSquare(sq,insetRatio,flipped,pressMs=70) {
+function isElementVisible(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.closest("#dc-panel")) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) return false;
+    const cs = window.getComputedStyle(el);
+    return cs.display !== "none" && cs.visibility !== "hidden" && cs.opacity !== "0";
+}
+
+function simulateFullClick(el) {
+    if (!el) return false;
+    try {
+        const r = el.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        const opts = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window };
+        
+        if (typeof PointerEvent === "function") {
+            el.dispatchEvent(new PointerEvent("pointerdown", { ...opts, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+        }
+        el.dispatchEvent(new MouseEvent("mousedown", { ...opts, button: 0, buttons: 1 }));
+        
+        if (typeof PointerEvent === "function") {
+            el.dispatchEvent(new PointerEvent("pointerup", { ...opts, button: 0, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+        }
+        el.dispatchEvent(new MouseEvent("mouseup", { ...opts, button: 0, buttons: 0 }));
+        el.dispatchEvent(new MouseEvent("click", { ...opts, button: 0, buttons: 0 }));
+        
+        if (typeof el.click === "function") {
+            el.click();
+        }
+
+        // Dispatch on topmost element at point if different
+        const topEl = document.elementFromPoint(x, y);
+        if (topEl && topEl !== el && !topEl.closest("#dc-panel")) {
+            if (typeof PointerEvent === "function") {
+                topEl.dispatchEvent(new PointerEvent("pointerdown", { ...opts, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+                topEl.dispatchEvent(new PointerEvent("pointerup", { ...opts, button: 0, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+            }
+            topEl.dispatchEvent(new MouseEvent("mousedown", { ...opts, button: 0, buttons: 1 }));
+            topEl.dispatchEvent(new MouseEvent("mouseup", { ...opts, button: 0, buttons: 0 }));
+            topEl.dispatchEvent(new MouseEvent("click", { ...opts, button: 0, buttons: 0 }));
+            if (typeof topEl.click === "function") topEl.click();
+        }
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+async function clickSquare(sq,insetRatio,flipped,pressMs=80) {
     const canvas=await waitCanvas();
     function coords(r) {
         const iw=r.width*insetRatio,ih=r.height*insetRatio;
@@ -153,57 +204,123 @@ async function clickSquare(sq,insetRatio,flipped,pressMs=70) {
 
 // True Pawn Promotion Check
 function isPawnPromotion(fen, uci) {
+    if (!uci || uci.length < 4) return false;
     if (uci.length >= 5) return true;
-    if (!_Chess) {
-        return (uci[1] === "7" && uci[3] === "8") || (uci[1] === "2" && uci[3] === "1");
+    const from = uci.slice(0, 2), to = uci.slice(2, 4);
+    
+    // Check with Chess.js
+    if (_Chess) {
+        try {
+            const c = new _Chess(fen);
+            const piece = c.get(from);
+            if (piece && piece.type === "p") {
+                return (piece.color === "w" && to[1] === "8") || (piece.color === "b" && to[1] === "1");
+            }
+        } catch (_) {}
     }
+    
+    // Check FEN string directly
     try {
-        const c = new _Chess(fen);
-        const piece = c.get(uci.slice(0, 2));
-        if (piece && piece.type === "p") {
-            return (piece.color === "w" && uci[3] === "8") || (piece.color === "b" && uci[3] === "1");
+        const rows = fen.split(" ")[0].split("/");
+        const fileIdx = from.charCodeAt(0) - 97;
+        const rankNum = Number(from[1]);
+        const side = fen.split(" ")[1] || "w";
+        
+        if (side === "w" && rankNum === 7 && to[1] === "8") {
+            let col = 0;
+            for (const ch of rows[1]) {
+                if (/\d/.test(ch)) col += Number(ch);
+                else {
+                    if (col === fileIdx && ch === "P") return true;
+                    col++;
+                }
+            }
+        }
+        if (side === "b" && rankNum === 2 && to[1] === "1") {
+            let col = 0;
+            for (const ch of rows[6]) {
+                if (/\d/.test(ch)) col += Number(ch);
+                else {
+                    if (col === fileIdx && ch === "p") return true;
+                    col++;
+                }
+            }
         }
     } catch (_) {}
+
+    return (from[1] === "7" && to[1] === "8") || (from[1] === "2" && to[1] === "1");
+}
+
+// Instant Full-Event Auto-Click for Promotion Modal (Queen Selection)
+function autoClickPromotion() {
+    // 1. Explicit Queen Selectors
+    const explicitQueenSelectors = [
+        `[data-piece="queen"]`, `[data-piece*="queen" i]`, `[data-piece="q"]`, `[data-piece="Q"]`,
+        `[data-test*="promotion-queen" i]`, `[data-test*="promote-queen" i]`, `[data-test*="queen" i]`,
+        `button[aria-label*="queen" i]`, `button[aria-label*="Hậu" i]`, `button[aria-label*="Dama" i]`, `button[aria-label*="Dame" i]`,
+        `[aria-label*="queen" i]`, `[aria-label*="Hậu" i]`, `[aria-label*="Dama" i]`, `[aria-label*="Dame" i]`,
+        `img[src*="queen" i]`, `img[alt*="queen" i]`, `svg[data-piece*="queen" i]`, `svg[data-piece*="q" i]`,
+        `[class*="queen" i]`, `[id*="queen" i]`
+    ];
+
+    for (const sel of explicitQueenSelectors) {
+        const els = document.querySelectorAll(sel);
+        for (const el of els) {
+            if (isElementVisible(el)) {
+                simulateFullClick(el);
+                if (el.parentElement && isElementVisible(el.parentElement)) {
+                    simulateFullClick(el.parentElement);
+                }
+                return true;
+            }
+        }
+    }
+
+    // 2. Generic Modal / Dialog detection
+    const modalContainers = document.querySelectorAll(
+        'div[role="dialog"], div[class*="modal" i], div[class*="dialog" i], div[class*="drawer" i], div[class*="popover" i], div[class*="overlay" i], div[class*="promotion" i], div[data-test*="modal" i], div[data-test*="promotion" i]'
+    );
+
+    for (const modal of modalContainers) {
+        if (!isElementVisible(modal)) continue;
+
+        // Queen is ALWAYS the 1st interactive option inside the promotion modal
+        const candidates = modal.querySelectorAll('button, div[role="button"], li[role="button"], div[tabindex="0"], div[class*="piece" i], img, svg');
+        for (const item of candidates) {
+            if (isElementVisible(item)) {
+                simulateFullClick(item);
+                if (item.parentElement && isElementVisible(item.parentElement)) {
+                    simulateFullClick(item.parentElement);
+                }
+                return true;
+            }
+        }
+    }
+
     return false;
 }
 
 // Universal Pawn Promotion Handler (DOM Modal + Canvas Selection)
 async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
-    await sleep(200);
-    const piece = (promoChar || "q").toLowerCase();
-    const name = { q: "queen", r: "rook", b: "bishop", n: "knight" }[piece] ?? "queen";
+    // 1. Wait 300ms for pawn move animation to reach destination square
+    await sleep(300);
 
-    // 1. Try DOM elements / popups
-    const selectors = [
-        `[data-piece="${name}"]`,
-        `[data-piece*="${name}" i]`,
-        `button[aria-label*="${name}" i]`,
-        `div[role="button"][aria-label*="${name}" i]`,
-        `[data-test*="promotion-${name}" i]`,
-        `[data-test*="promote-${name}" i]`,
-        `[data-test*="${name}" i]`,
-        `div[role="dialog"] button:first-child`,
-        `.promotion-modal button`
-    ];
+    // 2. Check DOM modal
+    if (autoClickPromotion()) {
+        await sleep(150);
+        return true;
+    }
 
-    for (const sel of selectors) {
-        const el = document.querySelector(sel);
-        if (el) {
-            el.click();
-            await sleep(120);
+    // 3. Click destination square on Canvas (where Queen is rendered)
+    for (let attempt = 0; attempt < 3; attempt++) {
+        await clickSquare(destSq, insetRatio, flipped, 90);
+        await sleep(150);
+        if (autoClickPromotion()) {
+            await sleep(150);
             return true;
         }
     }
 
-    // 2. Duolingo Canvas Promotion
-    // When rendered inside the HTML5 canvas, the Queen is drawn on the destination square
-    try {
-        await clickSquare(destSq, insetRatio, flipped, 80);
-        await sleep(150);
-        // Repeat once to confirm selection
-        await clickSquare(destSq, insetRatio, flipped, 80);
-        await sleep(100);
-    } catch (_) {}
     return true;
 }
 
@@ -836,6 +953,9 @@ async function recoverState() {
 function advanceFlow() {
     if (!BOT_CFG.autoPlay) return false;
 
+    // Check if promotion modal is visible and click Queen
+    if (autoClickPromotion()) return true;
+
     const candidates = Array.from(document.querySelectorAll('button, div[role="button"], a[role="button"], a[class*="button" i]'));
     const keywords = [
         "continue", "tiếp tục", "tiep tuc", "next", "claim", "claim reward", "claim xp",
@@ -844,8 +964,7 @@ function advanceFlow() {
     ];
 
     for (const btn of candidates) {
-        if (!btn || btn.offsetParent === null || btn.disabled || btn.getAttribute("aria-disabled") === "true") continue;
-        if (btn.closest("#dc-panel")) continue;
+        if (!isElementVisible(btn)) continue;
 
         const dataTest = (btn.getAttribute("data-test") || "").toLowerCase();
         const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
@@ -857,13 +976,13 @@ function advanceFlow() {
             dataTest.includes("claim-button") ||
             dataTest.includes("start-button") ||
             dataTest.includes("next-button")) {
-            btn.click();
+            simulateFullClick(btn);
             return true;
         }
 
         for (const kw of keywords) {
             if (txt === kw || txt.includes(kw) || ariaLabel.includes(kw) || dataTest.includes(kw.replace(/\s+/g, "-"))) {
-                btn.click();
+                simulateFullClick(btn);
                 return true;
             }
         }
@@ -1055,8 +1174,11 @@ async function _autoPollLoop(){
     _pollRunning = true;
 
     while(true){
-        await sleep(350);
+        await sleep(200);
         if(!BOT_CFG.autoPlay) continue;
+
+        // Auto-dismiss any promotion popups if visible
+        autoClickPromotion();
 
         const canvas = findCanvas();
         const hasOverlay = document.querySelector('[data-test*="end" i], [data-test*="game-over" i], [data-test*="modal" i], .session-end');
