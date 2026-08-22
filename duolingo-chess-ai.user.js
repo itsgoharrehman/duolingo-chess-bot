@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Duolingo Chess Solver & Auto-Match Bot (Fast GM Edition)
 // @namespace    duochess-lite
-// @version      3.1.0
-// @description  Fast, minimal Duolingo Chess bot: Big stat numbers, smooth draggable UI, universal touch/mouse promotion modal clicker, sub-15 move wins, and endless loop.
+// @version      3.2.0
+// @description  Fast, minimal Duolingo Chess bot: Silky-smooth pointer dragging, big stat numbers, accurate pawn promotion, and endless auto-match loop.
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
@@ -40,7 +40,7 @@ const SOL_CFG = {
     flipped:         false,
 };
 
-const STORE_KEY = "duochess.v31.settings";
+const STORE_KEY = "duochess.v32.settings";
 
 function loadSettings(){
     try{
@@ -144,30 +144,28 @@ function isElementVisible(el) {
     return cs.display !== "none" && cs.visibility !== "hidden" && cs.opacity !== "0";
 }
 
+function isForbiddenButton(el) {
+    if (!el) return true;
+    const txt = (el.innerText || el.textContent || "").toLowerCase();
+    const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+    const test = (el.getAttribute("data-test") || "").toLowerCase();
+    const forbidden = ["quit", "exit", "close", "leave", "sound", "volume", "setting", "menu", "back", "flag", "report", "restart", "resign"];
+    return forbidden.some(k => txt.includes(k) || aria.includes(k) || test.includes(k));
+}
+
 function simulateFullClick(el) {
-    if (!el) return false;
+    if (!el || isForbiddenButton(el)) return false;
     try {
         const r = el.getBoundingClientRect();
         const x = r.left + r.width / 2;
         const y = r.top + r.height / 2;
         const opts = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window };
         
-        // Touch events
-        if (typeof TouchEvent === "function") {
-            try {
-                const touch = new Touch({ identifier: 1, target: el, clientX: x, clientY: y, screenX: x, screenY: y, pageX: x, pageY: y });
-                el.dispatchEvent(new TouchEvent("touchstart", { bubbles: true, cancelable: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] }));
-                el.dispatchEvent(new TouchEvent("touchend", { bubbles: true, cancelable: true, touches: [], targetTouches: [], changedTouches: [touch] }));
-            } catch (_) {}
-        }
-
-        // Pointer & Mouse down
         if (typeof PointerEvent === "function") {
             el.dispatchEvent(new PointerEvent("pointerdown", { ...opts, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
         }
         el.dispatchEvent(new MouseEvent("mousedown", { ...opts, button: 0, buttons: 1 }));
         
-        // Pointer & Mouse up + Click
         if (typeof PointerEvent === "function") {
             el.dispatchEvent(new PointerEvent("pointerup", { ...opts, button: 0, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true }));
         }
@@ -175,19 +173,6 @@ function simulateFullClick(el) {
         el.dispatchEvent(new MouseEvent("click", { ...opts, button: 0, buttons: 0 }));
         
         if (typeof el.click === "function") el.click();
-
-        // Also fire on topmost element at coordinate if different
-        const topEl = document.elementFromPoint(x, y);
-        if (topEl && topEl !== el && !topEl.closest("#dc-pill")) {
-            if (typeof PointerEvent === "function") {
-                topEl.dispatchEvent(new PointerEvent("pointerdown", { ...opts, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
-                topEl.dispatchEvent(new PointerEvent("pointerup", { ...opts, button: 0, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true }));
-            }
-            topEl.dispatchEvent(new MouseEvent("mousedown", { ...opts, button: 0, buttons: 1 }));
-            topEl.dispatchEvent(new MouseEvent("mouseup", { ...opts, button: 0, buttons: 0 }));
-            topEl.dispatchEvent(new MouseEvent("click", { ...opts, button: 0, buttons: 0 }));
-            if (typeof topEl.click === "function") topEl.click();
-        }
         return true;
     } catch (_) {
         return false;
@@ -257,54 +242,37 @@ function isPawnPromotion(fen, uci) {
     return (from[1] === "7" && to[1] === "8") || (from[1] === "2" && to[1] === "1");
 }
 
-// Universal Auto-Click for Promotion Modal / Picker (Queen Selection)
+// Target Only True Queen Promotion Elements (Zero Risk of Clicking Quit)
 function autoClickPromotion() {
-    // 1. Dedicated Queen attributes and selectors
-    const directSelectors = [
-        `[data-piece="queen"]`, `[data-piece*="queen" i]`, `[data-piece="q"]`, `[data-piece="Q"]`,
-        `[data-test*="promotion-queen" i]`, `[data-test*="promote-queen" i]`, `[data-test*="queen" i]`,
-        `button[aria-label*="queen" i]`, `button[aria-label*="Hậu" i]`, `button[aria-label*="Dama" i]`, `button[aria-label*="Dame" i]`,
-        `[aria-label*="queen" i]`, `[aria-label*="Hậu" i]`, `[aria-label*="Dama" i]`, `[aria-label*="Dame" i]`,
-        `img[src*="queen" i]`, `img[alt*="queen" i]`, `svg[data-piece*="queen" i]`, `svg[data-piece*="q" i]`,
-        `[class*="queen" i]`, `[id*="queen" i]`
+    const queenSelectors = [
+        `[data-piece="queen"]`, `[data-piece="q"]`, `[data-piece="Q"]`,
+        `[data-test="queen"]`, `[data-test="player-piece-queen"]`, `[data-test*="promotion-queen" i]`, `[data-test*="promote-queen" i]`,
+        `button[aria-label*="queen" i]`, `div[role="button"][aria-label*="queen" i]`,
+        `img[alt*="queen" i]`, `img[src*="queen" i]`, `svg[data-piece*="queen" i]`
     ];
 
-    for (const sel of directSelectors) {
+    for (const sel of queenSelectors) {
         const els = document.querySelectorAll(sel);
         for (const el of els) {
-            if (isElementVisible(el)) {
+            if (isElementVisible(el) && !isForbiddenButton(el)) {
                 simulateFullClick(el);
-                if (el.parentElement && isElementVisible(el.parentElement)) simulateFullClick(el.parentElement);
+                if (el.parentElement && isElementVisible(el.parentElement) && !isForbiddenButton(el.parentElement)) {
+                    simulateFullClick(el.parentElement);
+                }
                 return true;
             }
         }
     }
 
-    // 2. Scan Any Open Modal / Dialog / Portal / Overlay
-    const modalContainers = document.querySelectorAll(
-        'dialog, div[role="dialog"], div[class*="modal" i], div[class*="dialog" i], div[class*="drawer" i], div[class*="popover" i], div[class*="overlay" i], div[class*="promotion" i], div[class*="portal" i], div[data-test*="modal" i], div[data-test*="promotion" i], div[data-test*="dialog" i]'
-    );
-
-    for (const modal of modalContainers) {
+    const promoModals = document.querySelectorAll('[data-test*="promotion" i], [class*="promotion" i], [id*="promotion" i]');
+    for (const modal of promoModals) {
         if (!isElementVisible(modal)) continue;
-
-        // Queen is ALWAYS the 1st interactive option in promotion modals
-        const items = modal.querySelectorAll('button, div[role="button"], li[role="button"], div[tabindex="0"], div[class*="piece" i], div[class*="choice" i], img, svg');
-        for (const item of items) {
-            if (isElementVisible(item)) {
-                simulateFullClick(item);
-                if (item.parentElement && isElementVisible(item.parentElement)) simulateFullClick(item.parentElement);
+        const pieceBtns = modal.querySelectorAll('button, div[role="button"]');
+        for (const btn of pieceBtns) {
+            if (isElementVisible(btn) && !isForbiddenButton(btn)) {
+                simulateFullClick(btn);
                 return true;
             }
-        }
-    }
-
-    // 3. Scan Any floating element containing SVG or Image pieces
-    const floatPieces = document.querySelectorAll('button:has(svg), button:has(img), div[role="button"]:has(svg), div[role="button"]:has(img)');
-    for (const fp of floatPieces) {
-        if (isElementVisible(fp) && !fp.closest("#dc-pill")) {
-            simulateFullClick(fp);
-            return true;
         }
     }
 
@@ -947,7 +915,7 @@ function advanceFlow() {
     ];
 
     for (const btn of candidates) {
-        if (!isElementVisible(btn)) continue;
+        if (!isElementVisible(btn) || isForbiddenButton(btn)) continue;
 
         const dataTest = (btn.getAttribute("data-test") || "").toLowerCase();
         const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
@@ -974,7 +942,7 @@ function advanceFlow() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  MINIMAL DRAGGABLE STATUS PILL WITH LARGE STAT NUMBERS
+//  MINIMAL SILKY-SMOOTH DRAGGABLE STATUS PILL (POINTER CAPTURE)
 // ══════════════════════════════════════════════════════════════════════════════
 
 let _panel = null;
@@ -982,15 +950,15 @@ let _panel = null;
 const STYLE = `
 #dc-pill{
     position:fixed;bottom:20px;right:20px;
-    background:rgba(15,23,42,0.96);border:1px solid rgba(255,255,255,0.12);
+    background:rgba(15,23,42,0.96);border:1px solid rgba(255,255,255,0.14);
     border-radius:12px;padding:10px 14px;
     font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     color:#f8fafc;z-index:2147483647;user-select:none;
-    box-shadow:0 8px 24px rgba(0,0,0,0.5);
+    box-shadow:0 8px 24px rgba(0,0,0,0.6);
     display:flex;flex-direction:column;gap:8px;
     min-width:190px;cursor:grab;touch-action:none;
 }
-#dc-pill.dragging{cursor:grabbing;opacity:0.9;}
+#dc-pill.dragging{cursor:grabbing;opacity:0.92;}
 .dc-header{display:flex;align-items:center;justify-content:space-between;gap:8px;}
 .dc-brand{font-weight:900;color:#58cc02;font-size:12px;letter-spacing:0.5px;}
 .dc-status{
@@ -1050,6 +1018,7 @@ function createPanel(){
     document.body.appendChild(_panel);
 
     const tg=_panel.querySelector("#dc-tg");
+    tg.addEventListener("pointerdown",(e)=>e.stopPropagation());
     tg.addEventListener("click",(e)=>{
         e.stopPropagation();
         BOT_CFG.autoPlay=!BOT_CFG.autoPlay;
@@ -1063,57 +1032,68 @@ function createPanel(){
 }
 
 function makeDraggable(el){
-    let isDown = false, startX, startY, origLeft, origTop;
-    
-    // Restore saved pos if exists
+    let isDragging = false;
+    let startX = 0, startY = 0;
+    let initialLeft = 0, initialTop = 0;
+
     try{
         const saved = JSON.parse(localStorage.getItem(STORE_KEY+"_pos")||"null");
         if(saved && typeof saved.left === "number" && typeof saved.top === "number"){
-            el.style.left = Math.min(window.innerWidth - 100, Math.max(10, saved.left)) + "px";
-            el.style.top = Math.min(window.innerHeight - 50, Math.max(10, saved.top)) + "px";
+            const maxL = Math.max(10, window.innerWidth - 210);
+            const maxT = Math.max(10, window.innerHeight - 80);
+            el.style.left = Math.min(maxL, Math.max(10, saved.left)) + "px";
+            el.style.top = Math.min(maxT, Math.max(10, saved.top)) + "px";
             el.style.bottom = "auto"; el.style.right = "auto";
         }
     }catch(_){}
 
-    el.addEventListener("mousedown", (e)=>{
-        if(e.target.tagName === "BUTTON") return;
-        isDown = true;
-        el.classList.add("dragging");
+    function initPos(){
+        const rect = el.getBoundingClientRect();
+        el.style.left = rect.left + "px";
+        el.style.top = rect.top + "px";
+        el.style.bottom = "auto";
+        el.style.right = "auto";
+    }
+
+    el.addEventListener("pointerdown", (e)=>{
+        if(e.target.tagName === "BUTTON" || e.target.closest("button")) return;
+        initPos();
+        isDragging = true;
+        try { el.setPointerCapture(e.pointerId); } catch(_) {}
         startX = e.clientX;
         startY = e.clientY;
         const rect = el.getBoundingClientRect();
-        origLeft = rect.left;
-        origTop = rect.top;
-        
-        const onMove = (ev)=>{
-            if(!isDown) return;
-            ev.preventDefault();
-            const dx = ev.clientX - startX;
-            const dy = ev.clientY - startY;
-            const newL = Math.max(10, Math.min(window.innerWidth - el.offsetWidth - 10, origLeft + dx));
-            const newT = Math.max(10, Math.min(window.innerHeight - el.offsetHeight - 10, origTop + dy));
-            el.style.left = newL + "px";
-            el.style.top = newT + "px";
-            el.style.bottom = "auto";
-            el.style.right = "auto";
-        };
-        
-        const onUp = ()=>{
-            if(isDown){
-                isDown = false;
-                el.classList.remove("dragging");
-                window.removeEventListener("mousemove", onMove);
-                window.removeEventListener("mouseup", onUp);
-                try{
-                    const r = el.getBoundingClientRect();
-                    localStorage.setItem(STORE_KEY+"_pos", JSON.stringify({left: r.left, top: r.top}));
-                }catch(_){}
-            }
-        };
-
-        window.addEventListener("mousemove", onMove);
-        window.addEventListener("mouseup", onUp);
+        initialLeft = rect.left;
+        initialTop = rect.top;
+        el.classList.add("dragging");
+        e.preventDefault();
     });
+
+    el.addEventListener("pointermove", (e)=>{
+        if(!isDragging) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        const maxLeft = Math.max(10, window.innerWidth - el.offsetWidth - 10);
+        const maxTop = Math.max(10, window.innerHeight - el.offsetHeight - 10);
+        const nextLeft = Math.min(maxLeft, Math.max(10, initialLeft + dx));
+        const nextTop = Math.min(maxTop, Math.max(10, initialTop + dy));
+        el.style.left = nextLeft + "px";
+        el.style.top = nextTop + "px";
+    });
+
+    const stopDrag = (e)=>{
+        if(!isDragging) return;
+        isDragging = false;
+        el.classList.remove("dragging");
+        try { el.releasePointerCapture(e.pointerId); } catch(_) {}
+        try {
+            const rect = el.getBoundingClientRect();
+            localStorage.setItem(STORE_KEY+"_pos", JSON.stringify({left: rect.left, top: rect.top}));
+        } catch(_) {}
+    };
+
+    el.addEventListener("pointerup", stopDrag);
+    el.addEventListener("pointercancel", stopDrag);
 }
 
 function renderPanel(){
