@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Duolingo Chess Solver & Auto-Match Bot (Fast GM Edition)
 // @namespace    duochess-lite
-// @version      3.2.0
-// @description  Fast, minimal Duolingo Chess bot: Silky-smooth pointer dragging, big stat numbers, accurate pawn promotion, and endless auto-match loop.
+// @version      3.3.0
+// @description  Fast, minimal Duolingo Chess bot: Auto-continue, auto-start next game, smooth pointer dragging, big stat numbers, accurate pawn promotion, and endless auto-match loop.
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
@@ -40,7 +40,7 @@ const SOL_CFG = {
     flipped:         false,
 };
 
-const STORE_KEY = "duochess.v32.settings";
+const STORE_KEY = "duochess.v33.settings";
 
 function loadSettings(){
     try{
@@ -146,11 +146,9 @@ function isElementVisible(el) {
 
 function isForbiddenButton(el) {
     if (!el) return true;
-    const txt = (el.innerText || el.textContent || "").toLowerCase();
-    const aria = (el.getAttribute("aria-label") || "").toLowerCase();
     const test = (el.getAttribute("data-test") || "").toLowerCase();
-    const forbidden = ["quit", "exit", "close", "leave", "sound", "volume", "setting", "menu", "back", "flag", "report", "restart", "resign"];
-    return forbidden.some(k => txt.includes(k) || aria.includes(k) || test.includes(k));
+    const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+    return test.includes("quit-button") || test.includes("close-button") || aria === "quit" || aria === "close" || aria === "leave";
 }
 
 function simulateFullClick(el) {
@@ -173,6 +171,11 @@ function simulateFullClick(el) {
         el.dispatchEvent(new MouseEvent("click", { ...opts, button: 0, buttons: 0 }));
         
         if (typeof el.click === "function") el.click();
+
+        const topEl = document.elementFromPoint(x, y);
+        if (topEl && topEl !== el && !topEl.closest("#dc-pill")) {
+            if (typeof topEl.click === "function") topEl.click();
+        }
         return true;
     } catch (_) {
         return false;
@@ -926,7 +929,8 @@ function advanceFlow() {
             dataTest.includes("continue-button") ||
             dataTest.includes("claim-button") ||
             dataTest.includes("start-button") ||
-            dataTest.includes("next-button")) {
+            dataTest.includes("next-button") ||
+            dataTest.includes("bottom-nav-next-button")) {
             simulateFullClick(btn);
             return true;
         }
@@ -1043,7 +1047,8 @@ function makeDraggable(el){
             const maxT = Math.max(10, window.innerHeight - 80);
             el.style.left = Math.min(maxL, Math.max(10, saved.left)) + "px";
             el.style.top = Math.min(maxT, Math.max(10, saved.top)) + "px";
-            el.style.bottom = "auto"; el.style.right = "auto";
+            el.style.bottom = "auto";
+            el.style.right = "auto";
         }
     }catch(_){}
 
@@ -1122,7 +1127,7 @@ async function _autoPollLoop(){
     _pollRunning = true;
 
     while(true){
-        await sleep(200);
+        await sleep(150);
         if(!BOT_CFG.autoPlay) continue;
 
         autoClickPromotion();
