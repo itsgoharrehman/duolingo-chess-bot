@@ -1,9 +1,8 @@
 // ==UserScript==
-// @name         Duolingo Chess Solver & Auto-Match Bot (Fast GM Mate Edition)
+// @name         Duolingo Chess Solver & Auto-Match Bot (Fast GM Edition)
 // @namespace    duochess-lite
-// @version      2.8.0
-// @icon         https://i.ibb.co/gZpNbsPP/cosmic.jpg
-// @description  Crush Oscar in under 15 moves: Guaranteed Queen promotion handler with animation sync & multi-event canvas/DOM confirm, per-match move counter reset, instant checkmate detection, Scholar/Queen attack openings, Stockfish 16+ GM depth 15, auto-click continue, and endless loop!
+// @version      3.0.0
+// @description  Fast, minimal Duolingo Chess bot: Sub-15 move wins, clean non-intrusive status pill, automatic pawn promotion, accurate move counter, and seamless auto-match loop.
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
@@ -21,9 +20,9 @@
 const BOT_CFG = {
     engine:          "stockfish",
     jceLevel:        4,
-    stockfishDepth:  15,          // Max grandmaster depth for fastest checkmates
+    stockfishDepth:  15,          // Max grandmaster depth for fast checkmates
     clickDelay:      50,          // Crisp click gap (ms)
-    moveDelay:       450,         // Settle delay (ms)
+    moveDelay:       400,         // Settle delay (ms)
     thinkDelay:      50,          // Rapid response to Oscar (ms)
     boardInsetRatio: 64 / 648,
     flipped:         false,
@@ -41,7 +40,7 @@ const SOL_CFG = {
     flipped:         false,
 };
 
-const STORE_KEY = "duochess.v28.settings";
+const STORE_KEY = "duochess.v30.settings";
 
 function loadSettings(){
     try{
@@ -87,7 +86,7 @@ const BOT_S = {
 };
 
 const SOL_STATE = {
-    raw: null, challenges: [], currentIdx: 0, solving: false, log: [],
+    raw: null, challenges: [], currentIdx: 0, solving: false
 };
 
 loadSettings();
@@ -137,7 +136,7 @@ function fireMouse(el,type,x,y,buttons) {
 
 function isElementVisible(el) {
     if (!el || !el.isConnected) return false;
-    if (el.closest("#dc-panel")) return false;
+    if (el.closest("#dc-pill")) return false;
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return false;
     if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) return false;
@@ -164,13 +163,10 @@ function simulateFullClick(el) {
         el.dispatchEvent(new MouseEvent("mouseup", { ...opts, button: 0, buttons: 0 }));
         el.dispatchEvent(new MouseEvent("click", { ...opts, button: 0, buttons: 0 }));
         
-        if (typeof el.click === "function") {
-            el.click();
-        }
+        if (typeof el.click === "function") el.click();
 
-        // Dispatch on topmost element at point if different
         const topEl = document.elementFromPoint(x, y);
-        if (topEl && topEl !== el && !topEl.closest("#dc-panel")) {
+        if (topEl && topEl !== el && !topEl.closest("#dc-pill")) {
             if (typeof PointerEvent === "function") {
                 topEl.dispatchEvent(new PointerEvent("pointerdown", { ...opts, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
                 topEl.dispatchEvent(new PointerEvent("pointerup", { ...opts, button: 0, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true }));
@@ -186,7 +182,7 @@ function simulateFullClick(el) {
     }
 }
 
-async function clickSquare(sq,insetRatio,flipped,pressMs=80) {
+async function clickSquare(sq,insetRatio,flipped,pressMs=75) {
     const canvas=await waitCanvas();
     function coords(r) {
         const iw=r.width*insetRatio,ih=r.height*insetRatio;
@@ -208,7 +204,6 @@ function isPawnPromotion(fen, uci) {
     if (uci.length >= 5) return true;
     const from = uci.slice(0, 2), to = uci.slice(2, 4);
     
-    // Check with Chess.js
     if (_Chess) {
         try {
             const c = new _Chess(fen);
@@ -219,7 +214,6 @@ function isPawnPromotion(fen, uci) {
         } catch (_) {}
     }
     
-    // Check FEN string directly
     try {
         const rows = fen.split(" ")[0].split("/");
         const fileIdx = from.charCodeAt(0) - 97;
@@ -251,10 +245,9 @@ function isPawnPromotion(fen, uci) {
     return (from[1] === "7" && to[1] === "8") || (from[1] === "2" && to[1] === "1");
 }
 
-// Instant Full-Event Auto-Click for Promotion Modal (Queen Selection)
+// Instant Auto-Click for Promotion Modal / Picker (Queen Selection)
 function autoClickPromotion() {
-    // 1. Explicit Queen Selectors
-    const explicitQueenSelectors = [
+    const queenSelectors = [
         `[data-piece="queen"]`, `[data-piece*="queen" i]`, `[data-piece="q"]`, `[data-piece="Q"]`,
         `[data-test*="promotion-queen" i]`, `[data-test*="promote-queen" i]`, `[data-test*="queen" i]`,
         `button[aria-label*="queen" i]`, `button[aria-label*="Hậu" i]`, `button[aria-label*="Dama" i]`, `button[aria-label*="Dame" i]`,
@@ -263,7 +256,7 @@ function autoClickPromotion() {
         `[class*="queen" i]`, `[id*="queen" i]`
     ];
 
-    for (const sel of explicitQueenSelectors) {
+    for (const sel of queenSelectors) {
         const els = document.querySelectorAll(sel);
         for (const el of els) {
             if (isElementVisible(el)) {
@@ -276,7 +269,6 @@ function autoClickPromotion() {
         }
     }
 
-    // 2. Generic Modal / Dialog detection
     const modalContainers = document.querySelectorAll(
         'div[role="dialog"], div[class*="modal" i], div[class*="dialog" i], div[class*="drawer" i], div[class*="popover" i], div[class*="overlay" i], div[class*="promotion" i], div[data-test*="modal" i], div[data-test*="promotion" i]'
     );
@@ -284,7 +276,6 @@ function autoClickPromotion() {
     for (const modal of modalContainers) {
         if (!isElementVisible(modal)) continue;
 
-        // Queen is ALWAYS the 1st interactive option inside the promotion modal
         const candidates = modal.querySelectorAll('button, div[role="button"], li[role="button"], div[tabindex="0"], div[class*="piece" i], img, svg');
         for (const item of candidates) {
             if (isElementVisible(item)) {
@@ -302,18 +293,15 @@ function autoClickPromotion() {
 
 // Universal Pawn Promotion Handler (DOM Modal + Canvas Selection)
 async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
-    // 1. Wait 300ms for pawn move animation to reach destination square
-    await sleep(300);
+    await sleep(250);
 
-    // 2. Check DOM modal
     if (autoClickPromotion()) {
         await sleep(150);
         return true;
     }
 
-    // 3. Click destination square on Canvas (where Queen is rendered)
     for (let attempt = 0; attempt < 3; attempt++) {
-        await clickSquare(destSq, insetRatio, flipped, 90);
+        await clickSquare(destSq, insetRatio, flipped, 85);
         await sleep(150);
         if (autoClickPromotion()) {
             await sleep(150);
@@ -330,10 +318,9 @@ async function loadChessJS(){
     try{
         const mod=await import("https://esm.sh/chess.js@1.3.0");
         _Chess=mod.Chess??mod.default?.Chess??mod.default;
-        addLog("sys","♟️ Chess.js Tactical Engine Ready");
         reparseChallenges();
         renderPanel();
-    }catch(e){addLog("sys","chess.js load failed");}
+    }catch(_){}
 }
 
 async function loadJCE(){
@@ -342,7 +329,7 @@ async function loadJCE(){
         BOT_S.jce=mod.Game??mod.default?.Game;
         BOT_S.jceReady=true;
         renderPanel();
-    } catch(e){}
+    } catch(_){}
 }
 
 async function loadStockfish(){
@@ -357,10 +344,9 @@ async function loadStockfish(){
         if(!data.success) throw new Error("API error");
         BOT_S.stockfishReady = true;
         BOT_S.stockfish = { api: true };
-        addLog("sys","⚡ Stockfish GM 3500+ (Depth 15) Ready");
         renderPanel();
         return true;
-    } catch(e){
+    } catch(_){
         return false;
     }
 }
@@ -369,14 +355,12 @@ async function loadStockfish(){
 //  LETHAL OPENING BOOK & RAPID CHECKMATE DETECTOR (<15 MOVES)
 // ══════════════════════════════════════════════════════════════════════════════
 
-// 1. Instant Checkmate in 1 or 2 Search
 function findInstantMate(fen){
     if(!_Chess) return null;
     try{
         const c=new _Chess(fen);
         const moves=c.moves({verbose:true});
         
-        // Check Mate in 1:
         for(const m of moves){
             c.move(m);
             if(c.isCheckmate()){
@@ -386,7 +370,6 @@ function findInstantMate(fen){
             c.undo();
         }
 
-        // Check Mate in 2 (Forced Mate):
         for(const m of moves){
             c.move(m);
             const oppMoves=c.moves({verbose:true});
@@ -415,26 +398,22 @@ function findInstantMate(fen){
     return null;
 }
 
-// 2. Fast Aggressive Opening Book against Oscar
 function getBookMove(fen){
     const fenSimple = fen.split(" ").slice(0, 4).join(" ");
-    
-    // As White: Aggressive Scholar / Wayward Queen Attack
     const whiteBook = {
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -": "e2e4",
-        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "d1h5", // Wayward Queen Attack
-        "r1bqkbnr/pppp1ppp/2n5/4p2Q/4P3/8/PPPP1PPP/RNB1KBNR w KQkq -": "f1c4", // Scholar threat on f7
-        "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1KBNR w KQkq -": "h5f7", // 4-Move Checkmate!
-        "r1bqkbnr/pppp1p1p/2n3p1/4p2Q/2B1P3/8/PPPP1PPP/RNB1KBNR w KQkq -": "h5f3", // Re-threaten f7
-        "r1bqkb1r/pppp1p1p/2n2np1/4p3/2B1P3/5Q2/PPPP1PPP/RNB1KBNR w KQkq -": "f3b3", // Double attack f7 & b7
-        "r1bqkb1r/pppp1p1p/5np1/4p3/2BnP3/1Q6/PPPP1PPP/RNB1KBNR w KQkq -": "c4f7", // King attack
+        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "d1h5",
+        "r1bqkbnr/pppp1ppp/2n5/4p2Q/4P3/8/PPPP1PPP/RNB1KBNR w KQkq -": "f1c4",
+        "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1KBNR w KQkq -": "h5f7",
+        "r1bqkbnr/pppp1p1p/2n3p1/4p2Q/2B1P3/8/PPPP1PPP/RNB1KBNR w KQkq -": "h5f3",
+        "r1bqkb1r/pppp1p1p/2n2np1/4p3/2B1P3/5Q2/PPPP1PPP/RNB1KBNR w KQkq -": "f3b3",
+        "r1bqkb1r/pppp1p1p/5np1/4p3/2BnP3/1Q6/PPPP1PPP/RNB1KBNR w KQkq -": "c4f7",
     };
 
     if(whiteBook[fenSimple]) return whiteBook[fenSimple];
     return null;
 }
 
-// 3. Lichess Cloud GM Database (Depth 40-50)
 async function getLichessCloudMove(fen){
     try{
         const encodedFen = encodeURIComponent(fen);
@@ -455,7 +434,6 @@ async function getLichessCloudMove(fen){
     return null;
 }
 
-// 4. Stockfish 16+ Max Depth Evaluation
 async function stockfishBestMove(fen, depth=15){
     try{
         const encodedFen = encodeURIComponent(fen);
@@ -471,49 +449,43 @@ async function stockfishBestMove(fen, depth=15){
         if(!data.success || !data.bestmove) throw new Error("No bestmove");
         const mv = data.bestmove.replace(/^bestmove\s*/,"").split(/\s+/)[0];
         return validUCI(mv) ? mv : null;
-    } catch(e){
+    } catch(_){
         return null;
     }
 }
 
-// Master Grandmaster Move Dispatcher
 async function getBestMove(fen){
-    // 1. Check for instant Checkmate in 1 or 2
     const instantMate = findInstantMate(fen);
     if(instantMate){
-        BOT_S.engineName = "MATE FOUND 🎯";
+        BOT_S.engineName = "Mate 1/2";
         return instantMate;
     }
 
-    // 2. Check Opening Book for fast win against Oscar
     const bookMv = getBookMove(fen);
     if(bookMv){
-        BOT_S.engineName = "Attack Book ⚡";
+        BOT_S.engineName = "Book";
         return bookMv;
     }
 
-    // 3. Try Lichess Cloud Deep Evaluation (Depth 40+)
     const lichessMv = await getLichessCloudMove(fen);
     if(lichessMv){
-        BOT_S.engineName = "Lichess Cloud GM";
+        BOT_S.engineName = "Lichess";
         return lichessMv;
     }
 
-    // 4. Deep Stockfish 16+ Depth 15
     const sfMv = await stockfishBestMove(fen, BOT_CFG.stockfishDepth);
     if(sfMv){
-        BOT_S.engineName = "Stockfish 16+ (D15)";
+        BOT_S.engineName = "Stockfish";
         return sfMv;
     }
 
-    // 5. High-speed local fallback
     if(BOT_S.jceReady && BOT_S.jce){
         try{
             const game=new BOT_S.jce(fen),obj=game.aiMove(BOT_CFG.jceLevel);
             const[from,to]=Object.entries(obj)[0];
             let uci=from.toLowerCase()+to.toLowerCase();
             if((parseInt(from[1])===7&&parseInt(to[1])===8)||(parseInt(from[1])===2&&parseInt(to[1])===1)) uci+="q";
-            BOT_S.engineName="js-chess-engine";
+            BOT_S.engineName="JCE";
             return uci;
         }catch(_){}
     }
@@ -558,12 +530,11 @@ function onMatchData(data){
     const uid = location.pathname.match(/\/(\d+)\//)?.[1] ?? "";
     if(match.id && BOT_S.matchId!==match.id){
         BOT_S.matchId=match.id;
-        BOT_S.movesPlayed = 0; // Reset moves played for new match!
+        BOT_S.movesPlayed = 0; // Clean 0 on new match!
         if(match.playerColor) BOT_S.playerColor = match.playerColor;
         else if(match.whitePlayer && (String(match.whitePlayer.userId)===uid || String(match.whitePlayer.id)===uid)) BOT_S.playerColor = "white";
         else if(match.blackPlayer && (String(match.blackPlayer.userId)===uid || String(match.blackPlayer.id)===uid)) BOT_S.playerColor = "black";
         else BOT_S.playerColor = "white";
-        addLog("bot",`⚔️ Match Active: ${match.id.slice(0,8)} (${BOT_S.playerColor})`);
     }
 
     if(match.boardFen) BOT_S.currentFen=match.boardFen;
@@ -573,9 +544,7 @@ function onMatchData(data){
         BOT_S.status="idle";
         BOT_S.matchId=null;
         BOT_S.matchesWon++;
-        BOT_S.movesPlayed = 0; // Reset move counter
         saveSettings();
-        addLog("bot","🏆 Match Won! Auto-starting next game...");
         renderPanel();
         advanceFlow();
         return;
@@ -649,7 +618,7 @@ async function takeTurn(){
         const flip=BOT_CFG.flipped||BOT_S.playerColor==="black";
         const hashBefore=canvasHash();
         
-        // Accurate pawn promotion detection
+        // True pawn promotion detection
         const isPromotion = isPawnPromotion(BOT_S.currentFen, move);
         let finalUci = move;
         if(isPromotion && finalUci.length === 4) finalUci += (move[4] || "q");
@@ -671,12 +640,11 @@ async function takeTurn(){
         await sleep(BOT_CFG.moveDelay);
         if(BOT_CFG.postMoves&&BOT_S.matchId) await postMove(finalUci);
         
+        // Increment move count only when move completes
         BOT_S.movesPlayed++;
         renderPanel();
-        addLog("bot",`♟️ Move #${BOT_S.movesPlayed}: <b>${finalUci.toUpperCase()}</b> [${BOT_S.engineName}]`);
         BOT_S.status="waiting";
     } catch(e){
-        addLog("bot","err: "+e.message);
         BOT_S.status="idle";
     }
     renderPanel();
@@ -809,7 +777,6 @@ function processSession(session){
     if(!Array.isArray(session?.challenges)) return;
     SOL_STATE.raw=session; SOL_STATE.currentIdx=0;
     SOL_STATE.challenges=[...(session.challenges??[]),...(session.adaptiveChallenges??[])].map(parseChallenge);
-    addLog("solver",`🧩 Session loaded: ${SOL_STATE.challenges.length} puzzles`);
     renderPanel();
     if(BOT_CFG.autoPlay && !SOL_STATE.solving){
         setTimeout(solveAll, 150);
@@ -817,8 +784,7 @@ function processSession(session){
 }
 
 async function solveChallenge(ch){
-    if(!ch.steps.length){addLog("solver",`#${ch.idx} no steps`);return;}
-    addLog("solver",`Solving #${ch.idx+1}/${SOL_STATE.challenges.length}`);
+    if(!ch.steps.length) return;
     for(const step of ch.steps){
         renderPanel();
         if(step.kind==="player"){
@@ -835,7 +801,6 @@ async function solveChallenge(ch){
             await sleep(60);
         }
     }
-    addLog("solver",`#${ch.idx+1} complete`);
     if(SOL_CFG.autoContinue){
         await sleep(SOL_CFG.continueDelay);
         advanceFlow();
@@ -854,7 +819,6 @@ async function solveAll(){
             renderPanel();
             await sleep(200);
         }
-        addLog("solver","All puzzles complete! Advancing...");
         await sleep(350);
         advanceFlow();
     } finally {
@@ -953,7 +917,6 @@ async function recoverState() {
 function advanceFlow() {
     if (!BOT_CFG.autoPlay) return false;
 
-    // Check if promotion modal is visible and click Queen
     if (autoClickPromotion()) return true;
 
     const candidates = Array.from(document.querySelectorAll('button, div[role="button"], a[role="button"], a[class*="button" i]'));
@@ -991,74 +954,35 @@ function advanceFlow() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  LOG
-// ══════════════════════════════════════════════════════════════════════════════
-
-function addLog(source,msg){
-    SOL_STATE.log.push({source,msg,time:new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"})});
-    if(SOL_STATE.log.length>100) SOL_STATE.log.shift();
-    renderPanel();
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  MINIMAL CLEAN PANEL
+//  SUPER CLEAN & MINIMAL FIXED STATUS PILL (NO DRAG, NO CONSOLE, NO SLOP)
 // ══════════════════════════════════════════════════════════════════════════════
 
 let _panel = null;
 
 const STYLE = `
-#dc-panel{
-    position:fixed;bottom:24px;right:24px;
-    width:320px;
-    background:rgba(18,24,38,0.96);
-    backdrop-filter:blur(14px);
-    border:1.5px solid rgba(88,204,2,0.4);
-    border-radius:18px;
-    box-shadow:0 12px 40px rgba(0,0,0,0.6), 0 0 25px rgba(88,204,2,0.2);
-    font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    font-size:12px;color:#f1f5f9;
-    user-select:none;z-index:2147483647;
-    overflow:hidden;
+#dc-pill{
+    position:fixed;bottom:16px;right:16px;
+    background:#111827;border:1px solid #374151;border-radius:10px;
+    padding:8px 12px;font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size:11px;color:#f3f4f6;z-index:2147483647;user-select:none;
+    box-shadow:0 4px 14px rgba(0,0,0,0.5);display:flex;flex-direction:column;gap:6px;min-width:170px;
 }
-#dc-panel.collapsed{width:220px;height:48px;}
-#dc-bar{
-    display:flex;align-items:center;justify-content:space-between;
-    padding:12px 16px;background:linear-gradient(135deg, rgba(88,204,2,0.25) 0%, rgba(20,29,47,0.7) 100%);
-    border-bottom:1px solid rgba(255,255,255,0.08);cursor:grab;
+.dc-header{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.dc-brand{font-weight:800;color:#58cc02;font-size:11px;letter-spacing:0.5px;}
+.dc-status{
+    font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;
+    background:#374151;color:#9ca3af;text-transform:uppercase;
 }
-#dc-title{
-    display:flex;align-items:center;gap:8px;
-    font-size:13px;font-weight:900;color:#58cc02;letter-spacing:0.5px;
+.dc-status.active{background:#15803d;color:#fff;}
+.dc-status.thinking{background:#b45309;color:#fff;}
+.dc-controls{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.dc-btn{
+    background:#58cc02;color:#000;border:none;border-radius:6px;
+    padding:4px 8px;font-size:10px;font-weight:700;cursor:pointer;
 }
-.dc-btn-icon{
-    background:rgba(255,255,255,0.1);border:none;border-radius:6px;
-    color:#cbd5e1;width:24px;height:24px;cursor:pointer;display:flex;align-items:center;justify-content:center;
-}
-#dc-body{padding:14px 16px;display:flex;flex-direction:column;gap:10px;}
-#dc-panel.collapsed #dc-body{display:none;}
-.dc-status-bar{
-    display:flex;align-items:center;justify-content:space-between;
-    background:rgba(0,0,0,0.35);padding:8px 12px;border-radius:10px;font-size:11px;
-}
-.dc-badge{padding:3px 8px;border-radius:20px;font-size:9px;font-weight:800;text-transform:uppercase;}
-.dc-badge-active{background:#58cc02;color:#000;}
-.dc-badge-thinking{background:#f59e0b;color:#000;}
-.dc-badge-ready{background:#3b82f6;color:#fff;}
-.dc-toggle{
-    background:#58cc02;color:#0f172a;font-weight:900;font-size:12px;
-    border:none;border-radius:10px;padding:10px;cursor:pointer;
-    display:flex;align-items:center;justify-content:center;gap:8px;
-}
-.dc-toggle.off{background:#334155;color:#94a3b8;}
-.dc-stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
-.dc-stat-card{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:6px 10px;text-align:center;}
-.dc-stat-val{font-size:15px;font-weight:900;color:#58cc02;}
-.dc-stat-lbl{font-size:9px;color:#94a3b8;text-transform:uppercase;}
-.dc-log{
-    background:rgba(0,0,0,0.5);border-radius:8px;padding:6px 8px;max-height:80px;
-    overflow-y:auto;font-family:monospace;font-size:10px;display:flex;flex-direction:column;gap:3px;
-}
-.dc-log-item{color:#93c5fd;}
+.dc-btn.off{background:#374151;color:#9ca3af;}
+.dc-stats{display:flex;gap:8px;font-size:10px;color:#9ca3af;}
+.dc-stats b{color:#fff;}
 `;
 
 function injectCSS(){
@@ -1074,93 +998,47 @@ function createPanel(){
     if(_panel){ _panel.remove(); _panel=null; }
 
     _panel=document.createElement("div");
-    _panel.id="dc-panel";
+    _panel.id="dc-pill";
 
     _panel.innerHTML=`
-    <div id="dc-bar">
-        <div id="dc-title"><span>♟️</span> DUO CHESS BOT</div>
-        <button class="dc-btn-icon" id="dc-min">_</button>
+    <div class="dc-header">
+        <span class="dc-brand">DUOCHESS</span>
+        <span class="dc-status" id="dc-st">${esc(BOT_S.status)}</span>
     </div>
-    <div id="dc-body">
-        <div class="dc-status-bar">
-            <span id="dc-st">${esc(BOT_S.status)}</span>
-            <span class="dc-badge dc-badge-active" id="dc-bdg">ACTIVE</span>
+    <div class="dc-controls">
+        <button id="dc-tg" class="dc-btn ${BOT_CFG.autoPlay?'':'off'}">${BOT_CFG.autoPlay?'AUTO: ON':'AUTO: OFF'}</button>
+        <div class="dc-stats">
+            <span>Wins: <b id="dc-w">${BOT_S.matchesWon}</b></span>
+            <span>Moves: <b id="dc-m">${BOT_S.movesPlayed}</b></span>
         </div>
-        <button class="dc-toggle ${BOT_CFG.autoPlay?'':'off'}" id="dc-tg">
-            <span>⚡</span> <span>${BOT_CFG.autoPlay?'AUTO-MATCH: ON':'AUTO-MATCH: OFF'}</span>
-        </button>
-        <div class="dc-stat-grid">
-            <div class="dc-stat-card">
-                <div class="dc-stat-val" id="dc-w">${BOT_S.matchesWon}</div>
-                <div class="dc-stat-lbl">Matches Won</div>
-            </div>
-            <div class="dc-stat-card">
-                <div class="dc-stat-val" id="dc-m">${BOT_S.movesPlayed}</div>
-                <div class="dc-stat-lbl">Moves (Current)</div>
-            </div>
-        </div>
-        <div class="dc-log" id="dc-logs"></div>
     </div>`;
 
     document.body.appendChild(_panel);
-
-    _panel.querySelector("#dc-min").addEventListener("click",()=>{
-        _panel.classList.toggle("collapsed");
-    });
 
     const tg=_panel.querySelector("#dc-tg");
     tg.addEventListener("click",()=>{
         BOT_CFG.autoPlay=!BOT_CFG.autoPlay;
         saveSettings();
         tg.classList.toggle("off",!BOT_CFG.autoPlay);
-        tg.querySelector("span:last-child").textContent=BOT_CFG.autoPlay?'AUTO-MATCH: ON':'AUTO-MATCH: OFF';
+        tg.textContent=BOT_CFG.autoPlay?'AUTO: ON':'AUTO: OFF';
     });
 
-    makeDraggable(_panel, _panel.querySelector("#dc-bar"));
     renderPanel();
 }
 
 function renderPanel(){
     if(!_panel) return;
     const st=_panel.querySelector("#dc-st");
-    const bdg=_panel.querySelector("#dc-bdg");
     const w=_panel.querySelector("#dc-w");
     const m=_panel.querySelector("#dc-m");
-    const l=_panel.querySelector("#dc-logs");
 
-    if(st) st.textContent=BOT_S.status;
+    if(st){
+        st.textContent=BOT_S.status.toUpperCase();
+        const isAct=BOT_S.status==="playing"||BOT_S.status==="our_turn";
+        st.className=`dc-status ${isAct?'active':BOT_S.status==='thinking'?'thinking':''}`;
+    }
     if(w) w.textContent=BOT_S.matchesWon;
     if(m) m.textContent=BOT_S.movesPlayed;
-
-    if(bdg){
-        const isAct=BOT_S.status==="playing"||BOT_S.status==="our_turn";
-        bdg.className=`dc-badge ${isAct?'dc-badge-active':BOT_S.status==='thinking'?'dc-badge-thinking':'dc-badge-ready'}`;
-        bdg.textContent=BOT_S.status.toUpperCase();
-    }
-
-    if(l){
-        l.innerHTML=[...SOL_STATE.log].slice(-10).reverse().map(e=>`
-            <div class="dc-log-item"><span style="color:#64748b">${e.time}</span> [${e.source}] ${esc(e.msg)}</div>
-        `).join("");
-    }
-}
-
-function makeDraggable(el, handle){
-    let pos1=0,pos2=0,pos3=0,pos4=0;
-    handle.onmousedown=(e)=>{
-        if(e.target.tagName==="BUTTON") return;
-        e.preventDefault();
-        pos3=e.clientX; pos4=e.clientY;
-        document.onmouseup=()=>{document.onmouseup=null;document.onmousemove=null;};
-        document.onmousemove=(e2)=>{
-            e2.preventDefault();
-            pos1=pos3-e2.clientX; pos2=pos4-e2.clientY;
-            pos3=e2.clientX; pos4=e2.clientY;
-            el.style.top=(el.offsetTop-pos2)+"px";
-            el.style.left=(el.offsetLeft-pos1)+"px";
-            el.style.bottom="auto"; el.style.right="auto";
-        };
-    };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1177,30 +1055,25 @@ async function _autoPollLoop(){
         await sleep(200);
         if(!BOT_CFG.autoPlay) continue;
 
-        // Auto-dismiss any promotion popups if visible
         autoClickPromotion();
 
         const canvas = findCanvas();
         const hasOverlay = document.querySelector('[data-test*="end" i], [data-test*="game-over" i], [data-test*="modal" i], .session-end');
 
-        // Advance flow if on lobby, reward screen, or end modal
         if(!canvas || hasOverlay || (!BOT_S.matchId && !SOL_STATE.challenges.length)){
             advanceFlow();
         }
 
         if(canvas){
-            // Auto-recover session / match if missing
             if(!BOT_S.matchId && !SOL_STATE.challenges.length){
                 await recoverState();
             }
 
             if(BOT_S.matchId){
-                // Actively poll server match state if waiting or idle
                 if(BOT_S.status === "waiting" || BOT_S.status === "idle"){
                     await _fetchMatchState();
                 }
 
-                // If it is our turn, immediately take turn
                 if(isOurTurn(BOT_S.currentFen) && BOT_S.status !== "thinking" && BOT_S.status !== "playing"){
                     BOT_S.status = "our_turn";
                     renderPanel();
@@ -1233,7 +1106,6 @@ function _boot(){
             recoverState();
         });
     }
-    addLog("sys","⚡ DuoChess GM Mate Edition Ready");
 }
 
 if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",_boot);
