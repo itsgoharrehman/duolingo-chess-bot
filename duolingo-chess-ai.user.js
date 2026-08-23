@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Duolingo Chess Solver & Auto-Match Bot (Fast GM Edition)
 // @namespace    duochess-lite
-// @version      3.8.0
-// @description  Flawless Queen promotion via DOM TreeWalker and precise coordinate dispatch, instant continue & auto-match next game, dual keyboard & React fiber click engine, sub-15 move wins, and silky drag pill.
+// @version      3.9.0
+// @description  Canvas grid & DOM dual Queen promotion engine, universal queenside/kingside castling engine, instant continue & auto-match next game, sub-15 move wins, and silky drag pill.
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
@@ -40,7 +40,7 @@ const SOL_CFG = {
     flipped:         false,
 };
 
-const STORE_KEY = "duochess.v37.settings";
+const STORE_KEY = "duochess.v39.settings";
 
 function loadSettings(){
     try{
@@ -217,20 +217,48 @@ function pressGlobalAdvanceKeys() {
     } catch (_) {}
 }
 
-async function clickSquare(sq,insetRatio,flipped,pressMs=75) {
-    const canvas=await waitCanvas();
+async function clickSquare(sq, insetRatio, flipped, pressMs = 75) {
+    const canvas = await waitCanvas();
     function coords(r) {
-        const iw=r.width*insetRatio,ih=r.height*insetRatio;
-        const bw=r.width-iw*2,bh=r.height-ih*2;
-        const file=sq.charCodeAt(0)-97,rank=Number(sq[1]);
-        const col=flipped?7-file:file,row=flipped?rank-1:8-rank;
-        return {x:r.left+iw+(col+0.5)*bw/8,y:r.top+ih+(row+0.5)*bh/8};
+        const iw = r.width * insetRatio, ih = r.height * insetRatio;
+        const bw = r.width - iw * 2, bh = r.height - ih * 2;
+        const file = sq.charCodeAt(0) - 97, rank = Number(sq[1]);
+        const col = flipped ? 7 - file : file, row = flipped ? rank - 1 : 8 - rank;
+        return { x: r.left + iw + (col + 0.5) * bw / 8, y: r.top + ih + (row + 0.5) * bh / 8 };
     }
-    const d=coords(canvas.getBoundingClientRect());
-    firePointer(canvas,"pointerdown",d.x,d.y,1); fireMouse(canvas,"mousedown",d.x,d.y,1);
+    const d = coords(canvas.getBoundingClientRect());
+    firePointer(canvas, "pointerdown", d.x, d.y, 1);
+    fireMouse(canvas, "mousedown", d.x, d.y, 1);
     await sleep(pressMs);
-    const u=coords(canvas.getBoundingClientRect());
-    firePointer(canvas,"pointerup",u.x,u.y,0); fireMouse(canvas,"mouseup",u.x,u.y,0); fireMouse(canvas,"click",u.x,u.y,0);
+    const u = coords(canvas.getBoundingClientRect());
+    firePointer(canvas, "pointerup", u.x, u.y, 0);
+    fireMouse(canvas, "mouseup", u.x, u.y, 0);
+    fireMouse(canvas, "click", u.x, u.y, 0);
+}
+
+// Click Canvas at fractional column / row coordinate
+async function clickCanvasFraction(colFrac, rowFrac, insetRatio, flipped, pressMs = 60) {
+    const canvas = findCanvas();
+    if (!canvas) return;
+    const r = canvas.getBoundingClientRect();
+    const iw = r.width * insetRatio, ih = r.height * insetRatio;
+    const bw = r.width - iw * 2, bh = r.height - ih * 2;
+    const col = flipped ? (7 - colFrac) : colFrac;
+    const row = flipped ? (7 - rowFrac) : rowFrac;
+    const x = r.left + iw + col * (bw / 8);
+    const y = r.top + ih + row * (bh / 8);
+
+    firePointer(canvas, "pointerdown", x, y, 1);
+    fireMouse(canvas, "mousedown", x, y, 1);
+    await sleep(pressMs);
+    firePointer(canvas, "pointerup", x, y, 0);
+    fireMouse(canvas, "mouseup", x, y, 0);
+    fireMouse(canvas, "click", x, y, 0);
+
+    const topEl = document.elementFromPoint(x, y);
+    if (topEl && topEl !== canvas && !topEl.closest("#dc-pill")) {
+        simulateFullClick(topEl);
+    }
 }
 
 // True Pawn Promotion Check
@@ -280,9 +308,11 @@ function isPawnPromotion(fen, uci) {
     return (from[1] === "7" && to[1] === "8") || (from[1] === "2" && to[1] === "1");
 }
 
-// Target Exact "PAWN PROMOTION" Dialog & Queen Piece Selection
+// Target Exact "PAWN PROMOTION" Dialog & Queen Piece Selection (DOM + Canvas)
 function autoClickPromotion() {
-    // 1. Detect Duolingo's "PAWN PROMOTION" card directly via TreeWalker for textual precision
+    let clicked = false;
+
+    // 1. Detect Duolingo's "PAWN PROMOTION" card via TreeWalker for text accuracy
     const allTextNodes = [];
     try {
         const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
@@ -317,20 +347,20 @@ function autoClickPromotion() {
                 pieces.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
                 const queen = pieces[0];
                 simulateFullClick(queen);
-                return true;
+                clicked = true;
             }
         }
 
         // Hard-dispatch absolute coordinates to hit the Queen based on layout (under text, left aligned)
         const qx = tr.left + (tr.width * 0.15) + 15;
-        const qy = tr.bottom + 35; // The icons are directly below the text
+        const qy = tr.bottom + 35;
         
         const topEl = document.elementFromPoint(qx, qy);
         if (topEl && !topEl.closest("#dc-pill")) {
             simulateFullClick(topEl);
+            clicked = true;
         }
         
-        // Final fallback: pure synthetic events at the coordinate
         const opts = { bubbles: true, cancelable: true, composed: true, clientX: qx, clientY: qy, screenX: qx, screenY: qy, view: window };
         if (typeof PointerEvent === "function") {
             window.dispatchEvent(new PointerEvent("pointerdown", { ...opts, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
@@ -339,10 +369,10 @@ function autoClickPromotion() {
         window.dispatchEvent(new MouseEvent("mousedown", { ...opts, button: 0, buttons: 1 }));
         window.dispatchEvent(new MouseEvent("mouseup", { ...opts, button: 0, buttons: 0 }));
         window.dispatchEvent(new MouseEvent("click", { ...opts, button: 0, buttons: 0 }));
-        return true;
+        clicked = true;
     }
 
-    // 2. Direct Queen piece selectors (Fallback)
+    // 2. Direct Queen piece selectors (DOM Fallback)
     const queenSelectors = [
         `[data-piece="queen"]`, `[data-piece="q"]`, `[data-piece="Q"]`,
         `[data-test="queen"]`, `[data-test="player-piece-queen"]`, `[data-test*="promotion-queen" i]`, `[data-test*="promote-queen" i]`,
@@ -358,22 +388,54 @@ function autoClickPromotion() {
                 if (el.parentElement && isElementVisible(el.parentElement) && !isForbiddenButton(el.parentElement)) {
                     simulateFullClick(el.parentElement);
                 }
-                return true;
+                clicked = true;
             }
         }
     }
 
-    return false;
+    return clicked;
 }
 
-// Universal Pawn Promotion Handler
+// Universal Pawn Promotion Handler (Canvas Coordinates + DOM)
 async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
-    for (let attempt = 0; attempt < 8; attempt++) {
-        await sleep(100);
-        if (autoClickPromotion()) {
-            await sleep(150);
-            return true;
+    const destFile = destSq.charCodeAt(0) - 97; // 0 to 7
+    const destRank = Number(destSq[1]);         // 8 or 1
+
+    for (let attempt = 0; attempt < 10; attempt++) {
+        await sleep(80);
+        
+        // 1. Try DOM promotion click
+        autoClickPromotion();
+
+        // 2. Click exact Canvas Queen coordinates
+        if (destRank === 8) {
+            // White promoting on Rank 8
+            if (destFile < 4) {
+                // Files a-d: Queen icon is at column a (col 0.5), row 6 (row 2.0 / 2.3)
+                await clickCanvasFraction(0.5, 2.0, insetRatio, flipped, 45);
+                await clickCanvasFraction(0.5, 1.8, insetRatio, flipped, 45);
+                await clickSquare("a6", insetRatio, flipped, 45);
+            } else {
+                // Files e-h: Queen icon is at column e (col 4.5) or column d (col 3.5), row 6 (row 2.0)
+                await clickCanvasFraction(4.5, 2.0, insetRatio, flipped, 45);
+                await clickCanvasFraction(3.5, 2.0, insetRatio, flipped, 45);
+                await clickSquare("e6", insetRatio, flipped, 45);
+                await clickSquare("d6", insetRatio, flipped, 45);
+            }
+        } else if (destRank === 1) {
+            // Black promoting on Rank 1
+            if (destFile < 4) {
+                await clickCanvasFraction(0.5, 5.0, insetRatio, flipped, 45);
+                await clickSquare("a3", insetRatio, flipped, 45);
+            } else {
+                await clickCanvasFraction(4.5, 5.0, insetRatio, flipped, 45);
+                await clickSquare("e3", insetRatio, flipped, 45);
+            }
         }
+
+        // 3. Also click square right below / above destination
+        const stepRank = destRank === 8 ? 7 : 2;
+        await clickSquare(`${destSq[0]}${stepRank}`, insetRatio, flipped, 45);
     }
     return true;
 }
@@ -572,7 +634,7 @@ async function getBestMove(fen){
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  BOT MATCH LOGIC
+//  BOT MATCH LOGIC & UNIVERSAL CASTLING SUPPORT
 // ══════════════════════════════════════════════════════════════════════════════
 
 const MATCHES_RE=/\/chess\/\d+\/\d+\/matches(?:\/([^/?#]+))?/;
@@ -692,6 +754,9 @@ async function takeTurn(){
         let finalUci = move;
         if(isPromotion && finalUci.length === 4) finalUci += (move[4] || "q");
 
+        // Castling detection
+        const isCastle = (move === "e1g1" || move === "e1c1" || move === "e8g8" || move === "e8c8");
+
         // 1. Click source square
         await clickSquare(move.slice(0,2),BOT_CFG.boardInsetRatio,flip);
         await waitCanvasChange(hashBefore, 600, 25);
@@ -700,6 +765,13 @@ async function takeTurn(){
         // 2. Click destination square
         await clickSquare(move.slice(2,4),BOT_CFG.boardInsetRatio,flip);
         
+        // 2b. Universal Castling Support (Clicks Rook as fallback if board expects king-to-rook)
+        if (isCastle) {
+            await sleep(80);
+            const rookSq = move === "e1g1" ? "h1" : move === "e1c1" ? "a1" : move === "e8g8" ? "h8" : "a8";
+            await clickSquare(rookSq, BOT_CFG.boardInsetRatio, flip, 50);
+        }
+
         // 3. Handle Promotion if true pawn promotion
         if(isPromotion){
             const promoChar = move[4] || "q";
