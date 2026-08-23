@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Duolingo Chess Solver & Auto-Match Bot (Fast GM Edition)
 // @namespace    duochess-lite
-// @version      3.6.0
-// @description  Instant continue & auto-match next game, dual keyboard & React fiber click engine, sub-15 move wins, big numbers, and silky drag pill.
+// @version      3.8.0
+// @description  Flawless Queen promotion via DOM TreeWalker and precise coordinate dispatch, instant continue & auto-match next game, dual keyboard & React fiber click engine, sub-15 move wins, and silky drag pill.
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
@@ -40,7 +40,7 @@ const SOL_CFG = {
     flipped:         false,
 };
 
-const STORE_KEY = "duochess.v36.settings";
+const STORE_KEY = "duochess.v37.settings";
 
 function loadSettings(){
     try{
@@ -170,15 +170,22 @@ function simulateFullClick(el) {
         const r = el.getBoundingClientRect();
         const x = r.left + r.width / 2;
         const y = r.top + r.height / 2;
-        const opts = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, view: window };
+        
+        let target = el;
+        try {
+            const topEl = document.elementFromPoint(x, y);
+            if (topEl && !topEl.closest("#dc-pill")) target = topEl;
+        } catch (_) {}
+        
+        const opts = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, view: window };
 
         if (typeof PointerEvent === "function") {
-            el.dispatchEvent(new PointerEvent("pointerdown", { ...opts, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
-            el.dispatchEvent(new PointerEvent("pointerup", { ...opts, button: 0, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+            target.dispatchEvent(new PointerEvent("pointerdown", { ...opts, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+            target.dispatchEvent(new PointerEvent("pointerup", { ...opts, button: 0, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true }));
         }
-        el.dispatchEvent(new MouseEvent("mousedown", { ...opts, button: 0, buttons: 1 }));
-        el.dispatchEvent(new MouseEvent("mouseup", { ...opts, button: 0, buttons: 0 }));
-        el.dispatchEvent(new MouseEvent("click", { ...opts, button: 0, buttons: 0 }));
+        target.dispatchEvent(new MouseEvent("mousedown", { ...opts, button: 0, buttons: 1 }));
+        target.dispatchEvent(new MouseEvent("mouseup", { ...opts, button: 0, buttons: 0 }));
+        target.dispatchEvent(new MouseEvent("click", { ...opts, button: 0, buttons: 0 }));
 
         // 4. Click any inner span/button
         const inner = el.querySelector("span, div, p");
@@ -273,8 +280,69 @@ function isPawnPromotion(fen, uci) {
     return (from[1] === "7" && to[1] === "8") || (from[1] === "2" && to[1] === "1");
 }
 
-// Target Only True Queen Promotion Elements
+// Target Exact "PAWN PROMOTION" Dialog & Queen Piece Selection
 function autoClickPromotion() {
+    // 1. Detect Duolingo's "PAWN PROMOTION" card directly via TreeWalker for textual precision
+    const allTextNodes = [];
+    try {
+        const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        let n;
+        while(n = walk.nextNode()) {
+            const txt = (n.nodeValue || "").trim().toUpperCase();
+            if(txt === "PAWN PROMOTION" || txt.includes("PAWN PROMOTION") || txt === "PROMOTION") {
+                if(n.parentElement && !n.parentElement.closest("#dc-pill")) {
+                    allTextNodes.push(n.parentElement);
+                }
+            }
+        }
+    } catch(e) {}
+
+    if (allTextNodes.length > 0) {
+        const promoTitle = allTextNodes[0];
+        const tr = promoTitle.getBoundingClientRect();
+        
+        let promoCard = promoTitle.parentElement;
+        for (let i = 0; i < 4; i++) {
+            if (promoCard && promoCard.getBoundingClientRect().height > 50) break;
+            if (promoCard.parentElement) promoCard = promoCard.parentElement;
+        }
+
+        if (promoCard) {
+            // Find all piece candidates inside the promotion card
+            const pieces = Array.from(promoCard.querySelectorAll('button, svg, img, div[role="button"], li, div[tabindex="0"], div[class*="piece" i]'))
+                .filter(p => !p.contains(promoTitle) && p.getBoundingClientRect().width > 15 && p.getBoundingClientRect().height > 15);
+            
+            if (pieces.length > 0) {
+                // The Queen is ALWAYS the 1st option (leftmost piece)
+                pieces.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+                const queen = pieces[0];
+                simulateFullClick(queen);
+                return true;
+            }
+        }
+
+        // Hard-dispatch absolute coordinates to hit the Queen based on layout (under text, left aligned)
+        const qx = tr.left + (tr.width * 0.15) + 15;
+        const qy = tr.bottom + 35; // The icons are directly below the text
+        
+        const topEl = document.elementFromPoint(qx, qy);
+        if (topEl && !topEl.closest("#dc-pill")) {
+            simulateFullClick(topEl);
+        }
+        
+        // Final fallback: pure synthetic events at the coordinate
+        const opts = { bubbles: true, cancelable: true, composed: true, clientX: qx, clientY: qy, screenX: qx, screenY: qy, view: window };
+        if (typeof PointerEvent === "function") {
+            window.dispatchEvent(new PointerEvent("pointerdown", { ...opts, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+            window.dispatchEvent(new PointerEvent("pointerup", { ...opts, button: 0, buttons: 0, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+        }
+        window.dispatchEvent(new MouseEvent("mousedown", { ...opts, button: 0, buttons: 1 }));
+        window.dispatchEvent(new MouseEvent("mouseup", { ...opts, button: 0, buttons: 0 }));
+        window.dispatchEvent(new MouseEvent("click", { ...opts, button: 0, buttons: 0 }));
+        return true;
+    }
+
+    // 2. Direct Queen piece selectors (Fallback)
     const queenSelectors = [
         `[data-piece="queen"]`, `[data-piece="q"]`, `[data-piece="Q"]`,
         `[data-test="queen"]`, `[data-test="player-piece-queen"]`, `[data-test*="promotion-queen" i]`, `[data-test*="promote-queen" i]`,
@@ -295,39 +363,18 @@ function autoClickPromotion() {
         }
     }
 
-    const promoModals = document.querySelectorAll('[data-test*="promotion" i], [class*="promotion" i], [id*="promotion" i]');
-    for (const modal of promoModals) {
-        if (!isElementVisible(modal)) continue;
-        const pieceBtns = modal.querySelectorAll('button, div[role="button"]');
-        for (const btn of pieceBtns) {
-            if (isElementVisible(btn) && !isForbiddenButton(btn)) {
-                simulateFullClick(btn);
-                return true;
-            }
-        }
-    }
-
     return false;
 }
 
-// Universal Pawn Promotion Handler (DOM Modal + Canvas Selection)
+// Universal Pawn Promotion Handler
 async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
-    await sleep(250);
-
-    if (autoClickPromotion()) {
-        await sleep(150);
-        return true;
-    }
-
-    for (let attempt = 0; attempt < 3; attempt++) {
-        await clickSquare(destSq, insetRatio, flipped, 85);
-        await sleep(150);
+    for (let attempt = 0; attempt < 8; attempt++) {
+        await sleep(100);
         if (autoClickPromotion()) {
             await sleep(150);
             return true;
         }
     }
-
     return true;
 }
 
@@ -939,10 +986,13 @@ async function recoverState() {
 function advanceFlow() {
     if (!BOT_CFG.autoPlay) return false;
 
-    // Always dispatch global Enter & Space (instantly triggers Duolingo bottom bar Continue)
+    // 1. Check & click Queen promotion first
+    if (autoClickPromotion()) return true;
+
+    // 2. Always dispatch global Enter & Space (instantly triggers Duolingo bottom bar Continue)
     pressGlobalAdvanceKeys();
 
-    // Scan all buttons & interactive elements on screen
+    // 3. Scan all buttons & interactive elements on screen
     const candidates = Array.from(document.querySelectorAll(
         'button, [role="button"], a, div[data-test*="button" i], div[data-test*="next" i], div[data-test*="continue" i]'
     ));
@@ -960,7 +1010,7 @@ function advanceFlow() {
         const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
         const txt = (btn.innerText || btn.textContent || "").trim().toLowerCase();
 
-        // 1. Direct Duolingo action attributes
+        // Direct Duolingo action attributes
         if (dataTest.includes("player-next") ||
             dataTest.includes("player-start-button") ||
             dataTest.includes("continue-button") ||
@@ -975,7 +1025,7 @@ function advanceFlow() {
             return true;
         }
 
-        // 2. Direct Text matches (e.g. "CONTINUE", "PLAY AGAIN")
+        // Direct Text matches (e.g. "CONTINUE", "PLAY AGAIN")
         for (const kw of keywords) {
             if (txt === kw || txt.includes(kw) || ariaLabel.includes(kw) || dataTest.includes(kw.replace(/\s+/g, "-"))) {
                 simulateFullClick(btn);
@@ -1168,14 +1218,18 @@ async function _autoPollLoop(){
     _pollRunning = true;
 
     while(true){
-        await sleep(150);
+        await sleep(100);
         if(!BOT_CFG.autoPlay) continue;
 
-        // 1. Dismiss any promotion modals
-        autoClickPromotion();
+        // 1. Always dismiss promotion modals immediately
+        const promoHandled = autoClickPromotion();
+        if(promoHandled && BOT_S.status === "thinking"){
+            BOT_S.status = "waiting";
+            renderPanel();
+        }
 
         // 2. Aggressively advance flow (Continue, Claim, Next, Start Match, Rematch)
-        if(BOT_S.status !== "playing" && BOT_S.status !== "thinking"){
+        if(BOT_S.status !== "playing"){
             advanceFlow();
         }
 
