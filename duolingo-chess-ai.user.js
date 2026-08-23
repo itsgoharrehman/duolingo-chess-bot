@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Duolingo Chess Solver & Auto-Match Bot (Fast GM Edition)
 // @namespace    duochess-lite
-// @version      3.9.0
-// @description  Canvas grid & DOM dual Queen promotion engine, universal queenside/kingside castling engine, instant continue & auto-match next game, sub-15 move wins, and silky drag pill.
+// @version      3.9.1
+// @description  Canvas grid & DOM dual Queen promotion engine, universal castling, eliminated sign-in popup probes, instant continue & auto-match, and silky drag pill.
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
@@ -792,11 +792,13 @@ async function takeTurn(){
 }
 
 async function postMove(uci){
+    if(!BOT_S.matchId) return;
     const uid=location.pathname.match(/\/(\d+)\//)?.[1]??"0";
     const hdrs={"Content-Type":"application/json"};
     if(BOT_S.authToken) hdrs["Authorization"]=BOT_S.authToken;
     try{
-        const res=await _origFetch(`/chess/1/${uid}/matches/${BOT_S.matchId}/moves`,{method:"POST",headers:hdrs,body:JSON.stringify({move:uci})});
+        const res=await _origFetch(`/chess/1/${uid}/matches/${BOT_S.matchId}/moves`,{method:"POST",headers:hdrs,body:JSON.stringify({move:uci}),credentials:"include"});
+        if(!res.ok) return;
         const data=await res.json(),m=data.match??data;
         if(m?.boardFen) BOT_S.currentFen=m.boardFen;
         if(m?.boardFen&&isOurTurn(m.boardFen)&&BOT_CFG.autoPlay) setTimeout(takeTurn,BOT_CFG.thinkDelay+BOT_CFG.moveDelay);
@@ -1003,21 +1005,10 @@ async function _fetchSession() {
             if (hit) sessionUrl = hit.name;
         } catch (_) {}
     }
-    if (!sessionUrl) {
-        const date = new Date().toISOString().slice(0, 10);
-        const candidates = [`https://www.duolingo.com/${date}/sessions`, `/api/1/sessions`, `/${date}/sessions`];
-        for (const url of candidates) {
-            try {
-                const hdrs = {}; if (BOT_S.authToken) hdrs["Authorization"] = BOT_S.authToken;
-                const r = await _origFetch(url, { method: "GET", headers: hdrs });
-                if (r.ok) { sessionUrl = url; break; }
-            } catch (_) {}
-        }
-    }
     if (sessionUrl) {
         try {
             const hdrs = {}; if (BOT_S.authToken) hdrs["Authorization"] = BOT_S.authToken;
-            const r = await _origFetch(sessionUrl, { method: "GET", headers: hdrs });
+            const r = await _origFetch(sessionUrl, { method: "GET", headers: hdrs, credentials: "include" });
             if (r.ok) { const data = await r.json(); processSession(data); return true; }
         } catch (_) {}
     }
@@ -1029,7 +1020,7 @@ async function _fetchMatchState() {
     const uid = location.pathname.match(/\/(\d+)\//)?.[1] ?? "0";
     const hdrs = {}; if (BOT_S.authToken) hdrs["Authorization"] = BOT_S.authToken;
     try {
-        const res = await _origFetch(`/chess/1/${uid}/matches/${BOT_S.matchId}`, { method: "GET", headers: hdrs });
+        const res = await _origFetch(`/chess/1/${uid}/matches/${BOT_S.matchId}`, { method: "GET", headers: hdrs, credentials: "include" });
         if (!res.ok) return;
         const data = await res.json();
         onMatchData(data);
@@ -1047,7 +1038,9 @@ async function recoverState() {
                 return;
             }
         }
-        await _fetchSession();
+        if (!location.pathname.includes("chess")) {
+            await _fetchSession();
+        }
     } catch (_) {}
 }
 
