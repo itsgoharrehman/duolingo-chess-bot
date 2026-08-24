@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Duolingo Chess Solver & Auto-Match Bot (Ultimate Mobile & PC Edition)
+// @name         Duolingo Chess Solver & Auto-Match Bot (Pro Edition)
 // @namespace    duochess-lite
-// @version      4.1.0
-// @description  Zero-glitch Duolingo Chess bot with native touch gestures, atomic drag fallbacks, accurate piece selection, and instant auto-match.
+// @version      4.2.0
+// @description  Precision Duolingo Chess bot with atomic drag fallbacks, multi-tier move execution, zero stuck loops, watchdog anti-freeze, and clean SVG UI.
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
@@ -21,38 +21,41 @@
 //  DEVICE DETECTION & CONFIG
 // ══════════════════════════════════════════════════════════════════════════════
 
-const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
-    || (typeof navigator.maxTouchPoints === "number" && navigator.maxTouchPoints > 1)
-    || ('ontouchstart' in window);
+const UA = navigator.userAgent || "";
+const IS_TABLET = /iPad|Tablet|(Android(?!.*Mobile))/i.test(UA);
+const IS_MOBILE = (!IS_TABLET && /Android|iPhone|iPod|Mobile/i.test(UA))
+    || (typeof navigator.maxTouchPoints === "number" && navigator.maxTouchPoints > 1 && window.innerWidth < 768);
+
+const DEVICE_TYPE = IS_MOBILE ? "mobile" : IS_TABLET ? "tablet" : "desktop";
 
 const BOT_CFG = {
     engine:          "stockfish",
     jceLevel:        4,
     stockfishDepth:  15,
-    clickDelay:      IS_MOBILE ? 140 : 55,
-    moveDelay:       IS_MOBILE ? 280 : 160,
-    thinkDelay:      IS_MOBILE ? 100 : 40,
+    clickDelay:      IS_MOBILE ? 130 : 50,
+    moveDelay:       IS_MOBILE ? 260 : 150,
+    thinkDelay:      IS_MOBILE ? 80 : 35,
     boardInsetRatio: 64 / 648,
     flipped:         false,
     autoPlay:        true,
-    postMoves:       false, // Duolingo's canvas clicks automatically submit moves; avoid duplicate POST
+    postMoves:       false,
 };
 
 const SOL_CFG = {
     boardInsetRatio: 64 / 648,
-    clickDelay:      IS_MOBILE ? 140 : 55,
-    moveDelay:       IS_MOBILE ? 280 : 160,
-    enemyDelay:      IS_MOBILE ? 750 : 550,
-    continueDelay:   IS_MOBILE ? 350 : 200,
+    clickDelay:      IS_MOBILE ? 130 : 50,
+    moveDelay:       IS_MOBILE ? 260 : 150,
+    enemyDelay:      IS_MOBILE ? 700 : 500,
+    continueDelay:   IS_MOBILE ? 300 : 180,
     autoContinue:    true,
     flipped:         false,
 };
 
-const STORE_KEY = "duochess.v41.settings";
+const STORE_KEY = "duochess.v42.settings";
 
 function loadSettings(){
     try{
-        const saved=JSON.parse(localStorage.getItem(STORE_KEY)||"{}");
+        const saved = JSON.parse(localStorage.getItem(STORE_KEY)||"{}");
         if(saved.bot) Object.assign(BOT_CFG, saved.bot);
         if(saved.solver) Object.assign(SOL_CFG, saved.solver);
         if(typeof saved.matchesWon === "number") BOT_S.matchesWon = saved.matchesWon;
@@ -60,7 +63,7 @@ function loadSettings(){
 }
 function saveSettings(){
     try{
-        localStorage.setItem(STORE_KEY,JSON.stringify({
+        localStorage.setItem(STORE_KEY, JSON.stringify({
             bot: BOT_CFG,
             solver: SOL_CFG,
             matchesWon: BOT_S.matchesWon
@@ -79,6 +82,8 @@ const toUCI    = s => String(s).trim().split(/\s+/).filter(validUCI);
 const esc      = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 const fenSide  = fen => (fen?.split(" ")?.[1] ?? "w").toLowerCase();
 
+let _lastStateChange = Date.now();
+
 const BOT_S = {
     matchId: null, playerColor: "white",
     currentFen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
@@ -90,6 +95,14 @@ const BOT_S = {
     movesPlayed: 0,
     _takeTurnLock: false,
 };
+
+function setStatus(newStatus) {
+    if (BOT_S.status !== newStatus) {
+        BOT_S.status = newStatus;
+        _lastStateChange = Date.now();
+        renderPanel();
+    }
+}
 
 const SOL_STATE = {
     raw: null, challenges: [], currentIdx: 0, solving: false
@@ -105,7 +118,7 @@ let _canvasCache = { el: null, t: 0 };
 
 function findCanvas() {
     const now = Date.now();
-    const cacheMs = IS_MOBILE ? 250 : 120;
+    const cacheMs = IS_MOBILE ? 220 : 100;
     if (_canvasCache.el && _canvasCache.el.isConnected && (now - _canvasCache.t) < cacheMs) {
         return _canvasCache.el;
     }
@@ -129,7 +142,7 @@ function findCanvas() {
 
 async function waitCanvas(timeout=8000) {
     const t0=Date.now();
-    const pollMs = IS_MOBILE ? 50 : 30;
+    const pollMs = IS_MOBILE ? 40 : 25;
     while(Date.now()-t0<timeout){ const c=findCanvas(); if(c) return c; await sleep(pollMs); }
     throw new Error("Canvas not found");
 }
@@ -149,12 +162,12 @@ function canvasHash() {
 }
 
 async function waitCanvasChange(baseline, timeout, interval) {
-    timeout  = timeout  ?? (IS_MOBILE ? 1200 : 750);
-    interval = interval ?? (IS_MOBILE ? 35   : 20);
+    timeout  = timeout  ?? (IS_MOBILE ? 1100 : 700);
+    interval = interval ?? (IS_MOBILE ? 30   : 20);
     const canvas = findCanvas();
-    if (!canvas || baseline === null) { await sleep(IS_MOBILE ? 90 : 50); return; }
+    if (!canvas || baseline === null) { await sleep(IS_MOBILE ? 80 : 40); return false; }
     const ctx = canvas.getContext("2d");
-    if (!ctx) { await sleep(IS_MOBILE ? 90 : 50); return; }
+    if (!ctx) { await sleep(IS_MOBILE ? 80 : 40); return false; }
     const w = Math.min(canvas.width, 64), h = Math.min(canvas.height, 64);
     const t0 = Date.now();
     while (Date.now() - t0 < timeout) {
@@ -170,154 +183,70 @@ async function waitCanvasChange(baseline, timeout, interval) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  SPEC-COMPLIANT TOUCH & POINTER GESTURE ENGINE (ZERO GLITCHES)
+//  CLEAN, UNIFIED POINTER EVENT DISPATCHER
 // ══════════════════════════════════════════════════════════════════════════════
 
-let _touchCounter = 1;
-
-function makeTouch(el, x, y, id = 1) {
-    if (typeof Touch !== "function") return null;
+function makeEvent(type, x, y, buttons = 0, button = 0) {
+    const canvas = findCanvas();
+    const r = canvas ? canvas.getBoundingClientRect() : { left: 0, top: 0 };
+    const opts = {
+        bubbles: true, cancelable: true, composed: true, view: window,
+        clientX: x, clientY: y, screenX: x, screenY: y,
+        button: button, buttons: buttons,
+        pressure: buttons ? 0.5 : 0,
+        pointerId: 1,
+        pointerType: IS_MOBILE ? "touch" : "mouse",
+        isPrimary: true
+    };
+    let ev;
+    if (typeof PointerEvent === "function") {
+        try { ev = new PointerEvent(type, opts); } catch (_) { ev = new MouseEvent(type, opts); }
+    } else {
+        ev = new MouseEvent(type, opts);
+    }
     try {
-        return new Touch({
-            identifier: id,
-            target: el,
-            clientX: x, clientY: y,
-            screenX: x, screenY: y,
-            pageX: x + (window.scrollX || 0),
-            pageY: y + (window.scrollY || 0),
-            radiusX: 8, radiusY: 8,
-            rotationAngle: 0, force: 1
-        });
-    } catch (_) { return null; }
+        Object.defineProperty(ev, 'offsetX', { value: x - r.left, configurable: true });
+        Object.defineProperty(ev, 'offsetY', { value: y - r.top,  configurable: true });
+        Object.defineProperty(ev, 'pageX',   { value: x + (window.scrollX || 0), configurable: true });
+        Object.defineProperty(ev, 'pageY',   { value: y + (window.scrollY || 0), configurable: true });
+        Object.defineProperty(ev, 'x',       { value: x, configurable: true });
+        Object.defineProperty(ev, 'y',       { value: y, configurable: true });
+    } catch (_) {}
+    return ev;
 }
 
-/**
- * Standard, robust tap sequence on any element (Canvas or DOM).
- * Orders events correctly: touchstart -> pointerdown -> mousedown -> hold -> touchend -> pointerup -> mouseup -> click
- */
-async function dispatchTap(el, x, y, pressMs = 50) {
+async function dispatchTap(el, x, y, pressMs = 40) {
     if (!el) return;
-    const touchId = (++_touchCounter) & 0xffff;
-    const t = makeTouch(el, x, y, touchId);
-
-    // 1. Touch Start
-    if (t && typeof TouchEvent === "function") {
-        try {
-            el.dispatchEvent(new TouchEvent("touchstart", {
-                bubbles: true, cancelable: true, composed: true, view: window,
-                touches: [t], targetTouches: [t], changedTouches: [t]
-            }));
-        } catch (_) {}
-    }
-
-    // 2. Pointer Down & Mouse Down
-    if (typeof PointerEvent === "function") {
-        el.dispatchEvent(new PointerEvent("pointerover",  { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, pointerId: 1, pointerType: IS_MOBILE ? "touch" : "mouse", isPrimary: true, view: window }));
-        el.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false, cancelable: false, composed: true, clientX: x, clientY: y, pointerId: 1, pointerType: IS_MOBILE ? "touch" : "mouse", isPrimary: true, view: window }));
-        el.dispatchEvent(new PointerEvent("pointerdown",  { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons: 1, pressure: 0.5, pointerId: 1, pointerType: IS_MOBILE ? "touch" : "mouse", isPrimary: true, view: window }));
-    }
-    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons: 1, view: window }));
-
+    el.dispatchEvent(makeEvent("pointerdown", x, y, 1, 0));
+    el.dispatchEvent(makeEvent("mousedown",   x, y, 1, 0));
     if (pressMs > 0) await sleep(pressMs);
-
-    // 3. Touch End
-    if (t && typeof TouchEvent === "function") {
-        try {
-            el.dispatchEvent(new TouchEvent("touchend", {
-                bubbles: true, cancelable: true, composed: true, view: window,
-                touches: [], targetTouches: [], changedTouches: [t]
-            }));
-        } catch (_) {}
-    }
-
-    // 4. Pointer Up, Mouse Up & Click
-    if (typeof PointerEvent === "function") {
-        el.dispatchEvent(new PointerEvent("pointerup",   { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons: 0, pressure: 0, pointerId: 1, pointerType: IS_MOBILE ? "touch" : "mouse", isPrimary: true, view: window }));
-        el.dispatchEvent(new PointerEvent("pointerout",  { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, pointerId: 1, pointerType: IS_MOBILE ? "touch" : "mouse", isPrimary: true, view: window }));
-        el.dispatchEvent(new PointerEvent("pointerleave",{ bubbles: false, cancelable: false, composed: true, clientX: x, clientY: y, pointerId: 1, pointerType: IS_MOBILE ? "touch" : "mouse", isPrimary: true, view: window }));
-    }
-    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons: 0, view: window }));
-    el.dispatchEvent(new MouseEvent("click",   { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons: 0, view: window }));
+    el.dispatchEvent(makeEvent("pointerup", x, y, 0, 0));
+    el.dispatchEvent(makeEvent("mouseup",   x, y, 0, 0));
+    el.dispatchEvent(makeEvent("click",     x, y, 0, 0));
 }
 
-/**
- * Atomic Drag from (x1, y1) to (x2, y2).
- * Works regardless of existing piece selections or touch gesture models.
- */
 async function dispatchDrag(el, x1, y1, x2, y2) {
     if (!el) return;
-    const touchId = (++_touchCounter) & 0xffff;
-    const t1 = makeTouch(el, x1, y1, touchId);
-
-    // 1. Down on Start Square
-    if (t1 && typeof TouchEvent === "function") {
-        try {
-            el.dispatchEvent(new TouchEvent("touchstart", {
-                bubbles: true, cancelable: true, composed: true, view: window,
-                touches: [t1], targetTouches: [t1], changedTouches: [t1]
-            }));
-        } catch (_) {}
-    }
-    if (typeof PointerEvent === "function") {
-        el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, composed: true, clientX: x1, clientY: y1, button: 0, buttons: 1, pressure: 0.5, pointerId: 1, pointerType: IS_MOBILE ? "touch" : "mouse", isPrimary: true, view: window }));
-    }
-    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, composed: true, clientX: x1, clientY: y1, button: 0, buttons: 1, view: window }));
-
+    el.dispatchEvent(makeEvent("pointerdown", x1, y1, 1, 0));
+    el.dispatchEvent(makeEvent("mousedown",   x1, y1, 1, 0));
     await sleep(25);
 
-    // 2. Interpolate Move (Midpoint)
     const xMid = (x1 + x2) / 2, yMid = (y1 + y2) / 2;
-    const tMid = makeTouch(el, xMid, yMid, touchId);
-    if (tMid && typeof TouchEvent === "function") {
-        try {
-            el.dispatchEvent(new TouchEvent("touchmove", {
-                bubbles: true, cancelable: true, composed: true, view: window,
-                touches: [tMid], targetTouches: [tMid], changedTouches: [tMid]
-            }));
-        } catch (_) {}
-    }
-    if (typeof PointerEvent === "function") {
-        el.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, cancelable: true, composed: true, clientX: xMid, clientY: yMid, buttons: 1, pressure: 0.5, pointerId: 1, pointerType: IS_MOBILE ? "touch" : "mouse", isPrimary: true, view: window }));
-    }
-    el.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true, composed: true, clientX: xMid, clientY: yMid, buttons: 1, view: window }));
-
+    el.dispatchEvent(makeEvent("pointermove", xMid, yMid, 1, 0));
+    el.dispatchEvent(makeEvent("mousemove",   xMid, yMid, 1, 0));
     await sleep(25);
 
-    // 3. Move to Destination
-    const t2 = makeTouch(el, x2, y2, touchId);
-    if (t2 && typeof TouchEvent === "function") {
-        try {
-            el.dispatchEvent(new TouchEvent("touchmove", {
-                bubbles: true, cancelable: true, composed: true, view: window,
-                touches: [t2], targetTouches: [t2], changedTouches: [t2]
-            }));
-        } catch (_) {}
-    }
-    if (typeof PointerEvent === "function") {
-        el.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, cancelable: true, composed: true, clientX: x2, clientY: y2, buttons: 1, pressure: 0.5, pointerId: 1, pointerType: IS_MOBILE ? "touch" : "mouse", isPrimary: true, view: window }));
-    }
-    el.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true, composed: true, clientX: x2, clientY: y2, buttons: 1, view: window }));
-
+    el.dispatchEvent(makeEvent("pointermove", x2, y2, 1, 0));
+    el.dispatchEvent(makeEvent("mousemove",   x2, y2, 1, 0));
     await sleep(35);
 
-    // 4. Release on Destination Square
-    if (t2 && typeof TouchEvent === "function") {
-        try {
-            el.dispatchEvent(new TouchEvent("touchend", {
-                bubbles: true, cancelable: true, composed: true, view: window,
-                touches: [], targetTouches: [], changedTouches: [t2]
-            }));
-        } catch (_) {}
-    }
-    if (typeof PointerEvent === "function") {
-        el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true, clientX: x2, clientY: y2, button: 0, buttons: 0, pressure: 0, pointerId: 1, pointerType: IS_MOBILE ? "touch" : "mouse", isPrimary: true, view: window }));
-    }
-    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, composed: true, clientX: x2, clientY: y2, button: 0, buttons: 0, view: window }));
-    el.dispatchEvent(new MouseEvent("click",   { bubbles: true, cancelable: true, composed: true, clientX: x2, clientY: y2, button: 0, buttons: 0, view: window }));
+    el.dispatchEvent(makeEvent("pointerup", x2, y2, 0, 0));
+    el.dispatchEvent(makeEvent("mouseup",   x2, y2, 0, 0));
+    el.dispatchEvent(makeEvent("click",     x2, y2, 0, 0));
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  SQUARE COORDINATE MAPPING & BOARD ACTIONS
+//  SQUARE COORDINATE MAPPING & THREE-TIER MOVE EXECUTION
 // ══════════════════════════════════════════════════════════════════════════════
 
 function getSquareCoords(canvas, sq, insetRatio, flipped) {
@@ -336,10 +265,10 @@ function getSquareCoords(canvas, sq, insetRatio, flipped) {
 async function clickSquare(sq, insetRatio, flipped, pressMs) {
     const canvas = await waitCanvas();
     const p = getSquareCoords(canvas, sq, insetRatio, flipped);
-    await dispatchTap(canvas, p.x, p.y, pressMs ?? (IS_MOBILE ? 80 : 45));
+    await dispatchTap(canvas, p.x, p.y, pressMs ?? (IS_MOBILE ? 70 : 40));
 }
 
-async function clickCanvasFraction(colFrac, rowFrac, insetRatio, flipped, pressMs = 45) {
+async function clickCanvasFraction(colFrac, rowFrac, insetRatio, flipped, pressMs = 40) {
     const canvas = findCanvas();
     if (!canvas) return;
     const r = canvas.getBoundingClientRect();
@@ -359,39 +288,47 @@ async function clickCanvasFraction(colFrac, rowFrac, insetRatio, flipped, pressM
 }
 
 /**
- * Execute a move (fromSq -> toSq) with self-verifying atomic drag fallback.
- * Solves 100% of stuck piece / 2nd attempt issues on mobile and PC!
+ * Three-Tier Bulletproof Move Execution:
+ * Tier 1: Crisp Dual-Tap (Source -> Wait Selection -> Dest)
+ * Tier 2: Atomic Physical Drag (Source -> Dest)
+ * Tier 3: Selection Reset (Outside Tap) + Drag Retry
  */
 async function executeMove(uci, insetRatio, flipped) {
     if (!validUCI(uci)) return false;
     const fromSq = uci.slice(0, 2);
     const toSq   = uci.slice(2, 4);
     const canvas = await waitCanvas();
-
     const h0 = canvasHash();
 
-    // ── ATTEMPT 1: Dual Tap (Tap From -> Tap To) ──
+    // ── Tier 1: Tap Source then Tap Destination ──
     const pFrom = getSquareCoords(canvas, fromSq, insetRatio, flipped);
-    await dispatchTap(canvas, pFrom.x, pFrom.y, IS_MOBILE ? 70 : 40);
+    await dispatchTap(canvas, pFrom.x, pFrom.y, IS_MOBILE ? 60 : 35);
 
-    // Wait for piece selection highlight
-    const selChanged = await waitCanvasChange(h0, IS_MOBILE ? 450 : 250);
-    await sleep(IS_MOBILE ? 80 : 40);
+    await waitCanvasChange(h0, IS_MOBILE ? 350 : 200);
+    await sleep(IS_MOBILE ? 60 : 30);
 
     const pTo = getSquareCoords(canvas, toSq, insetRatio, flipped);
-    await dispatchTap(canvas, pTo.x, pTo.y, IS_MOBILE ? 70 : 40);
+    await dispatchTap(canvas, pTo.x, pTo.y, IS_MOBILE ? 60 : 35);
 
-    // Check if board updated
-    const moved = await waitCanvasChange(h0, IS_MOBILE ? 500 : 300);
+    const moved = await waitCanvasChange(h0, IS_MOBILE ? 450 : 250);
     if (moved) return true;
 
-    // ── ATTEMPT 2: Atomic Physical Drag (Bypasses any stuck selection state) ──
-    await sleep(60);
+    // ── Tier 2: Atomic Physical Drag ──
+    await sleep(40);
     const p1 = getSquareCoords(canvas, fromSq, insetRatio, flipped);
     const p2 = getSquareCoords(canvas, toSq, insetRatio, flipped);
     await dispatchDrag(canvas, p1.x, p1.y, p2.x, p2.y);
 
-    await waitCanvasChange(h0, IS_MOBILE ? 600 : 350);
+    const dragMoved = await waitCanvasChange(h0, IS_MOBILE ? 500 : 300);
+    if (dragMoved) return true;
+
+    // ── Tier 3: Clear Stuck Selection & Re-Drag ──
+    const r = canvas.getBoundingClientRect();
+    await dispatchTap(canvas, r.left + (r.width * 0.02), r.top + (r.height * 0.02), 20);
+    await sleep(50);
+    await dispatchDrag(canvas, p1.x, p1.y, p2.x, p2.y);
+    await waitCanvasChange(h0, IS_MOBILE ? 500 : 300);
+
     return true;
 }
 
@@ -465,24 +402,24 @@ async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
     const destRank = Number(destSq[1]);
 
     for (let attempt = 0; attempt < 8; attempt++) {
-        await sleep(IS_MOBILE ? 90 : 60);
+        await sleep(IS_MOBILE ? 80 : 50);
         if (autoClickPromotion()) return true;
 
         if (destRank === 8) {
             if (destFile < 4) {
-                await clickCanvasFraction(0.5, 2.0, insetRatio, flipped, 35);
-                await clickSquare("a6", insetRatio, flipped, 35);
+                await clickCanvasFraction(0.5, 2.0, insetRatio, flipped, 30);
+                await clickSquare("a6", insetRatio, flipped, 30);
             } else {
-                await clickCanvasFraction(4.5, 2.0, insetRatio, flipped, 35);
-                await clickSquare("e6", insetRatio, flipped, 35);
+                await clickCanvasFraction(4.5, 2.0, insetRatio, flipped, 30);
+                await clickSquare("e6", insetRatio, flipped, 30);
             }
         } else if (destRank === 1) {
             if (destFile < 4) {
-                await clickCanvasFraction(0.5, 5.0, insetRatio, flipped, 35);
-                await clickSquare("a3", insetRatio, flipped, 35);
+                await clickCanvasFraction(0.5, 5.0, insetRatio, flipped, 30);
+                await clickSquare("a3", insetRatio, flipped, 30);
             } else {
-                await clickCanvasFraction(4.5, 5.0, insetRatio, flipped, 35);
-                await clickSquare("e3", insetRatio, flipped, 35);
+                await clickCanvasFraction(4.5, 5.0, insetRatio, flipped, 30);
+                await clickSquare("e3", insetRatio, flipped, 30);
             }
         }
     }
@@ -490,7 +427,7 @@ async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  DOM CLICKING & ADVANCE FLOW
+//  DOM ADVANCE FLOW & KEY DISPATCH
 // ══════════════════════════════════════════════════════════════════════════════
 
 function isElementVisible(el) {
@@ -526,7 +463,7 @@ function simulateFullClick(el) {
         const x = r.left + r.width / 2;
         const y = r.top + r.height / 2;
 
-        dispatchTap(el, x, y, 20);
+        dispatchTap(el, x, y, 15);
         return true;
     } catch (_) {
         return false;
@@ -590,7 +527,7 @@ function advanceFlow() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  CHESS ENGINE LOADERS & MOVE SELECTORS
+//  CHESS ENGINES & MOVE SELECTION
 // ══════════════════════════════════════════════════════════════════════════════
 
 let _Chess = null;
@@ -632,8 +569,8 @@ async function loadStockfish(){
 function findInstantMate(fen){
     if(!_Chess) return null;
     try{
-        const c=new _Chess(fen);
-        const moves=c.moves({verbose:true});
+        const c = new _Chess(fen);
+        const moves = c.moves({verbose:true});
         for(const m of moves){
             c.move(m);
             if(c.isCheckmate()){ c.undo(); return m.from+m.to+(m.promotion??""); }
@@ -641,13 +578,13 @@ function findInstantMate(fen){
         }
         for(const m of moves){
             c.move(m);
-            const oppMoves=c.moves({verbose:true});
+            const oppMoves = c.moves({verbose:true});
             if(oppMoves.length>0 && oppMoves.length<=3){
-                let allOppLeadToMate=true;
+                let allOppLeadToMate = true;
                 for(const om of oppMoves){
                     c.move(om);
-                    const myResponses=c.moves({verbose:true});
-                    const hasMate=myResponses.some(rm=>{ c.move(rm); const mate=c.isCheckmate(); c.undo(); return mate; });
+                    const myResponses = c.moves({verbose:true});
+                    const hasMate = myResponses.some(rm=>{ c.move(rm); const mate=c.isCheckmate(); c.undo(); return mate; });
                     c.undo();
                     if(!hasMate){ allOppLeadToMate=false; break; }
                 }
@@ -723,23 +660,23 @@ async function getBestMove(fen){
 
     if(BOT_S.jceReady && BOT_S.jce){
         try{
-            const game=new BOT_S.jce(fen), obj=game.aiMove(BOT_CFG.jceLevel);
-            const [from,to]=Object.entries(obj)[0];
-            let uci=from.toLowerCase()+to.toLowerCase();
+            const game = new BOT_S.jce(fen), obj = game.aiMove(BOT_CFG.jceLevel);
+            const [from,to] = Object.entries(obj)[0];
+            let uci = from.toLowerCase() + to.toLowerCase();
             if((parseInt(from[1])===7&&parseInt(to[1])===8)||(parseInt(from[1])===2&&parseInt(to[1])===1)) uci+="q";
-            BOT_S.engineName="JCE";
+            BOT_S.engineName = "JCE";
             return uci;
         }catch(_){}
     }
 
     if(_Chess){
         try{
-            const chess=new _Chess(fen), moves=chess.moves({verbose:true});
+            const chess = new _Chess(fen), moves = chess.moves({verbose:true});
             if(moves.length){
                 moves.sort((a,b) => (b.captured ? 10 : 0) - (a.captured ? 10 : 0));
-                const m=moves[0];
-                BOT_S.engineName="chess.js";
-                return m.from+m.to+(m.promotion??"");
+                const m = moves[0];
+                BOT_S.engineName = "chess.js";
+                return m.from + m.to + (m.promotion??"");
             }
         }catch(_){}
     }
@@ -748,13 +685,13 @@ async function getBestMove(fen){
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  MATCH TURN EXECUTION (ZERO STUCK MOVES)
+//  MATCH TURN EXECUTION
 // ══════════════════════════════════════════════════════════════════════════════
 
-const MATCHES_RE=/\/chess\/\d+\/\d+\/matches(?:\/([^/?#]+))?/;
-const MOVES_RE=/\/chess\/\d+\/\d+\/matches\/[^/?#]+\/moves/;
-const isMatchURL=url=>MATCHES_RE.test(url)&&!MOVES_RE.test(url);
-const isSessionURL=url=>typeof url==="string"&&/\/sessions(?:[/?#]|$)/i.test(url);
+const MATCHES_RE = /\/chess\/\d+\/\d+\/matches(?:\/([^/?#]+))?/;
+const MOVES_RE   = /\/chess\/\d+\/\d+\/matches\/[^/?#]+\/moves/;
+const isMatchURL = url => MATCHES_RE.test(url) && !MOVES_RE.test(url);
+const isSessionURL = url => typeof url==="string" && /\/sessions(?:[/?#]|$)/i.test(url);
 
 function isOurTurn(fen){
     if(!BOT_S.matchId) return false;
@@ -770,7 +707,7 @@ function onMatchData(data){
 
     const uid = location.pathname.match(/\/(\d+)\//)?.[1] ?? "";
     if(match.id && BOT_S.matchId!==match.id){
-        BOT_S.matchId=match.id;
+        BOT_S.matchId = match.id;
         BOT_S.movesPlayed = 0;
         if(match.playerColor) BOT_S.playerColor = match.playerColor.toLowerCase();
         else if(match.whitePlayer && (String(match.whitePlayer.userId)===uid || String(match.whitePlayer.id)===uid)) BOT_S.playerColor = "white";
@@ -778,15 +715,14 @@ function onMatchData(data){
         else BOT_S.playerColor = "white";
     }
 
-    if(match.boardFen) BOT_S.currentFen=match.boardFen;
-    if(Array.isArray(match.moveHistory)) BOT_S.moveHistory=[...match.moveHistory];
+    if(match.boardFen) BOT_S.currentFen = match.boardFen;
+    if(Array.isArray(match.moveHistory)) BOT_S.moveHistory = [...match.moveHistory];
 
     if(match.endCondition || match.status==="finished"){
-        BOT_S.status="idle";
-        BOT_S.matchId=null;
+        BOT_S.matchId = null;
         BOT_S.matchesWon++;
         saveSettings();
-        renderPanel();
+        setStatus("idle");
         advanceFlow();
         setTimeout(advanceFlow, 300);
         setTimeout(advanceFlow, 700);
@@ -795,54 +731,50 @@ function onMatchData(data){
 
     if(match.status==="active" && isOurTurn(BOT_S.currentFen)){
         if(BOT_S.status!=="thinking" && BOT_S.status!=="playing"){
-            BOT_S.status="our_turn";
+            setStatus("our_turn");
             if(BOT_CFG.autoPlay) setTimeout(takeTurn, BOT_CFG.thinkDelay);
         }
     } else {
-        BOT_S.status="waiting";
+        if(BOT_S.status!=="thinking" && BOT_S.status!=="playing"){
+            setStatus("waiting");
+        }
     }
-    renderPanel();
 }
 
 async function takeTurn(){
     if(BOT_S._takeTurnLock) return;
-    if(BOT_S.status==="thinking" || BOT_S.status==="playing") return;
     BOT_S._takeTurnLock = true;
-    BOT_S.status="thinking";
-    renderPanel();
+    setStatus("thinking");
 
     try {
         let move=null, fenUsed=null;
         let attempts=0;
         while(attempts++<2){
-            fenUsed=BOT_S.currentFen;
-            move=await getBestMove(fenUsed);
+            fenUsed = BOT_S.currentFen;
+            move = await getBestMove(fenUsed);
             if(!move) break;
-            if(fenUsed===BOT_S.currentFen) break;
+            if(fenUsed === BOT_S.currentFen) break;
             if(_Chess){
                 try{
-                    const c=new _Chess(BOT_S.currentFen);
-                    const ok=c.moves({verbose:true}).some(m=>m.from+m.to+(m.promotion??"")===move);
+                    const c = new _Chess(BOT_S.currentFen);
+                    const ok = c.moves({verbose:true}).some(m => m.from+m.to+(m.promotion??"") === move);
                     if(ok) break;
                 }catch(_){}
             }
-            move=null;
+            move = null;
         }
-        if(!move){ BOT_S.status="idle"; renderPanel(); return; }
+        if(!move){ setStatus("idle"); return; }
 
-        BOT_S.status="playing";
-        BOT_S.lastMove=move;
-        renderPanel();
+        setStatus("playing");
+        BOT_S.lastMove = move;
 
         const flip = BOT_CFG.flipped || (BOT_S.playerColor || "").toLowerCase() === "black";
         const isPromotion = isPawnPromotion(BOT_S.currentFen, move);
-        let finalUci = move;
-        if(isPromotion && finalUci.length === 4) finalUci += (move[4] || "q");
 
-        // Execute verified move with drag fallback
+        // Execute verified move
         await executeMove(move, BOT_CFG.boardInsetRatio, flip);
 
-        // Handle Queen promotion if pawn promoted
+        // Handle Queen promotion if applicable
         if(isPromotion){
             const promoChar = move[4] || "q";
             await handlePromotion(move.slice(2,4), promoChar, BOT_CFG.boardInsetRatio, flip);
@@ -851,9 +783,9 @@ async function takeTurn(){
         await sleep(BOT_CFG.moveDelay);
 
         BOT_S.movesPlayed++;
-        BOT_S.status="waiting";
+        setStatus("waiting");
     } catch(e){
-        BOT_S.status="idle";
+        setStatus("idle");
     } finally {
         BOT_S._takeTurnLock = false;
         renderPanel();
@@ -995,7 +927,7 @@ async function solveChallenge(ch){
         } else {
             const h1=canvasHash();
             await waitCanvasChange(h1, SOL_CFG.enemyDelay);
-            await sleep(IS_MOBILE ? 80 : 45);
+            await sleep(IS_MOBILE ? 60 : 35);
         }
     }
     if(SOL_CFG.autoContinue){
@@ -1014,9 +946,9 @@ async function solveAll(){
             await solveChallenge(ch);
             SOL_STATE.currentIdx++;
             renderPanel();
-            await sleep(IS_MOBILE ? 250 : 150);
+            await sleep(IS_MOBILE ? 220 : 120);
         }
-        await sleep(IS_MOBILE ? 350 : 200);
+        await sleep(IS_MOBILE ? 300 : 180);
         advanceFlow();
     } finally {
         SOL_STATE.solving=false;
@@ -1099,8 +1031,16 @@ async function recoverState() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  FLOATING STATUS PILL UI
+//  SVG DEVICE ICONS & CLEAN STATUS PILL UI (ZERO EMOJIS)
 // ══════════════════════════════════════════════════════════════════════════════
+
+const SVG_ICONS = {
+    desktop: `<svg class="dc-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#58cc02" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`,
+    tablet:  `<svg class="dc-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#58cc02" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>`,
+    mobile:  `<svg class="dc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#58cc02" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>`
+};
+
+const DEVICE_ICON_SVG = SVG_ICONS[DEVICE_TYPE] || SVG_ICONS.desktop;
 
 let _panel = null;
 
@@ -1108,29 +1048,31 @@ const STYLE = `
 #dc-pill{
     position:fixed;bottom:20px;right:16px;
     background:rgba(15,23,42,0.97);border:1px solid rgba(255,255,255,0.14);
-    border-radius:14px;padding:11px 15px;
+    border-radius:14px;padding:10px 14px;
     font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     color:#f8fafc;z-index:2147483647;user-select:none;
     box-shadow:0 8px 28px rgba(0,0,0,0.65);
-    display:flex;flex-direction:column;gap:9px;
-    min-width:${IS_MOBILE ? '160px' : '190px'};cursor:grab;touch-action:none;
+    display:flex;flex-direction:column;gap:8px;
+    min-width:${IS_MOBILE ? '160px' : '185px'};cursor:grab;touch-action:none;
     font-size:${IS_MOBILE ? '13px' : '12px'};
 }
 #dc-pill.dragging{cursor:grabbing;opacity:0.90;}
 .dc-header{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.dc-brand-wrap{display:flex;align-items:center;gap:6px;}
+.dc-icon{display:inline-block;vertical-align:middle;flex-shrink:0;}
 .dc-brand{font-weight:900;color:#58cc02;font-size:${IS_MOBILE ? '13px' : '12px'};letter-spacing:0.5px;}
 .dc-status{
     font-size:${IS_MOBILE ? '10px' : '9px'};font-weight:800;padding:3px 7px;border-radius:5px;
-    background:#334155;color:#94a3b8;text-transform:uppercase;
+    background:#334155;color:#94a3b8;text-transform:uppercase;letter-spacing:0.3px;
 }
 .dc-status.active{background:#15803d;color:#fff;}
 .dc-status.thinking{background:#b45309;color:#fff;}
 .dc-body-row{display:flex;align-items:center;justify-content:space-between;gap:12px;}
 .dc-btn{
     background:#58cc02;color:#000;border:none;border-radius:8px;
-    padding:${IS_MOBILE ? '9px 13px' : '6px 10px'};
+    padding:${IS_MOBILE ? '8px 12px' : '6px 10px'};
     font-size:${IS_MOBILE ? '12px' : '11px'};font-weight:800;cursor:pointer;
-    min-height:${IS_MOBILE ? '38px' : '28px'};
+    min-height:${IS_MOBILE ? '36px' : '28px'};
 }
 .dc-btn.off{background:#334155;color:#94a3b8;}
 .dc-stat-box{display:flex;align-items:center;gap:12px;}
@@ -1139,7 +1081,6 @@ const STYLE = `
 .dc-stat-num.win{color:#58cc02;}
 .dc-stat-num.mov{color:#38bdf8;}
 .dc-stat-label{font-size:${IS_MOBILE ? '9px' : '8px'};color:#64748b;font-weight:700;text-transform:uppercase;margin-top:2px;}
-.dc-mobile-tag{font-size:8px;color:#4a6fa5;text-align:center;font-weight:600;letter-spacing:0.4px;}
 `;
 
 function injectCSS(){
@@ -1159,7 +1100,10 @@ function createPanel(){
 
     _panel.innerHTML=`
     <div class="dc-header">
-        <span class="dc-brand">DUOCHESS</span>
+        <div class="dc-brand-wrap">
+            ${DEVICE_ICON_SVG}
+            <span class="dc-brand">DUOCHESS</span>
+        </div>
         <span class="dc-status" id="dc-st">${esc(BOT_S.status)}</span>
     </div>
     <div class="dc-body-row">
@@ -1174,8 +1118,7 @@ function createPanel(){
                 <span class="dc-stat-label">Moves</span>
             </div>
         </div>
-    </div>
-    ${IS_MOBILE ? '<div class="dc-mobile-tag">📱 MOBILE MODE</div>' : ''}`;
+    </div>`;
 
     document.body.appendChild(_panel);
 
@@ -1275,7 +1218,7 @@ function renderPanel(){
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  AUTO-PLAY & POLLING LOOP
+//  AUTO-PLAY & POLLING LOOP WITH ANTI-FREEZE WATCHDOG
 // ══════════════════════════════════════════════════════════════════════════════
 
 let _pollRunning = false;
@@ -1284,17 +1227,23 @@ async function _autoPollLoop(){
     if(_pollRunning) return;
     _pollRunning = true;
 
-    const POLL_MS = IS_MOBILE ? 220 : 90;
+    const POLL_MS = IS_MOBILE ? 200 : 80;
 
     while(true){
         await sleep(POLL_MS);
+
+        // Watchdog: Unfreeze if stuck in thinking/playing for > 4.5 seconds
+        if((BOT_S.status === "thinking" || BOT_S.status === "playing") && (Date.now() - _lastStateChange > 4500)){
+            BOT_S._takeTurnLock = false;
+            setStatus("idle");
+        }
+
         if(!BOT_CFG.autoPlay) continue;
 
-        // 1. Always dismiss promotion modals immediately
+        // 1. Dismiss promotion modals immediately
         const promoHandled = autoClickPromotion();
         if(promoHandled && BOT_S.status === "thinking"){
-            BOT_S.status = "waiting";
-            renderPanel();
+            setStatus("waiting");
         }
 
         // 2. Advance flow only when not mid-move
@@ -1318,8 +1267,7 @@ async function _autoPollLoop(){
                    !BOT_S._takeTurnLock &&
                    BOT_S.status !== "thinking" &&
                    BOT_S.status !== "playing"){
-                    BOT_S.status = "our_turn";
-                    renderPanel();
+                    setStatus("our_turn");
                     if(BOT_CFG.autoPlay){
                         takeTurn();
                     }
