@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Duolingo Chess Solver & Auto-Match Bot (Universal Pro Edition)
-// @namespace    duochess-universal
+// @name         Duolingo Chess Solver & Auto-Match Bot (Android / Mobile Edition)
+// @namespace    duochess-android
 // @version      5.0.0
-// @description  Single universal ultra-stable Duolingo Chess bot for PC & Android. Zero piece-sticking, verified single-pass move execution, anti-freeze watchdog, auto-promotion, and auto-match loop.
+// @description  Single universal ultra-stable Duolingo Chess bot for Android & Mobile. Zero piece-sticking, verified single-pass move execution, anti-freeze watchdog, auto-promotion, and auto-match loop.
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
