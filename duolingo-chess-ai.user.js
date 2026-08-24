@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Duolingo Chess Solver & Auto-Match Bot (Fast GM Edition)
+// @name         Duolingo Chess Solver & Auto-Match Bot (Mobile Edition)
 // @namespace    duochess-lite
-// @version      3.9.1
-// @description  Canvas grid & DOM dual Queen promotion engine, universal castling, eliminated sign-in popup probes, instant continue & auto-match, and silky drag pill.
+// @version      4.0.0
+// @description  Mobile-optimized: touch events, no stuck moves, race-condition-free mutex, reliable canvas clicks for Android browsers.
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
@@ -17,13 +17,22 @@
 (() => {
 "use strict";
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  MOBILE DETECTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+    || (navigator.maxTouchPoints > 1)
+    || ('ontouchstart' in window);
+
 const BOT_CFG = {
     engine:          "stockfish",
     jceLevel:        4,
-    stockfishDepth:  15,          // Max grandmaster depth for fast checkmates
-    clickDelay:      50,          // Crisp click gap (ms)
-    moveDelay:       400,         // Settle delay (ms)
-    thinkDelay:      50,          // Rapid response to Oscar (ms)
+    stockfishDepth:  15,
+    // Mobile needs longer delays so canvas registers touch before second click fires
+    clickDelay:      IS_MOBILE ? 180 : 60,
+    moveDelay:       IS_MOBILE ? 350 : 200,
+    thinkDelay:      IS_MOBILE ? 120 : 50,
     boardInsetRatio: 64 / 648,
     flipped:         false,
     autoPlay:        true,
@@ -32,10 +41,10 @@ const BOT_CFG = {
 
 const SOL_CFG = {
     boardInsetRatio: 64 / 648,
-    clickDelay:      50,
-    moveDelay:       400,
-    enemyDelay:      650,
-    continueDelay:   250,
+    clickDelay:      IS_MOBILE ? 180 : 60,
+    moveDelay:       IS_MOBILE ? 350 : 200,
+    enemyDelay:      IS_MOBILE ? 900 : 650,
+    continueDelay:   IS_MOBILE ? 400 : 250,
     autoContinue:    true,
     flipped:         false,
 };
@@ -82,7 +91,8 @@ const BOT_S = {
     stockfish: null, stockfishReady: false,
     engineName: "Stockfish GM", lastMove: null,
     matchesWon: 0,
-    movesPlayed: 0
+    movesPlayed: 0,
+    _takeTurnLock: false, // Mutex: prevents race-condition double-fire of takeTurn
 };
 
 const SOL_STATE = {
@@ -99,7 +109,9 @@ let _canvasCache = { el: null, t: 0 };
 
 function findCanvas() {
     const now = Date.now();
-    if (_canvasCache.el && _canvasCache.el.isConnected && (now - _canvasCache.t) < 150) {
+    // Longer cache on mobile: DOM reflow is slower
+    const cacheMs = IS_MOBILE ? 300 : 150;
+    if (_canvasCache.el && _canvasCache.el.isConnected && (now - _canvasCache.t) < cacheMs) {
         return _canvasCache.el;
     }
     const candidates = [...document.querySelectorAll("canvas")]
@@ -122,16 +134,41 @@ function findCanvas() {
 
 async function waitCanvas(timeout=10000) {
     const t0=Date.now();
-    while(Date.now()-t0<timeout){ const c=findCanvas(); if(c) return c; await sleep(40); }
+    const pollMs = IS_MOBILE ? 60 : 40;
+    while(Date.now()-t0<timeout){ const c=findCanvas(); if(c) return c; await sleep(pollMs); }
     throw new Error("Canvas not found");
 }
 
 function firePointer(el,type,x,y,buttons) {
     if(typeof PointerEvent==="function")
-        el.dispatchEvent(new PointerEvent(type,{bubbles:true,cancelable:true,composed:true,clientX:x,clientY:y,button:0,buttons,pointerId:1,pointerType:"mouse",isPrimary:true,view:window}));
+        el.dispatchEvent(new PointerEvent(type,{bubbles:true,cancelable:true,composed:true,clientX:x,clientY:y,button:0,buttons,pointerId:1,pointerType:IS_MOBILE?"touch":"mouse",isPrimary:true,view:window}));
 }
 function fireMouse(el,type,x,y,buttons) {
     el.dispatchEvent(new MouseEvent(type,{bubbles:true,cancelable:true,composed:true,clientX:x,clientY:y,button:0,buttons,view:window}));
+}
+
+/**
+ * Fire a touch tap at (x, y) on element el.
+ * Required for Android browsers (Quetta, Kiwi, etc.) to reliably hit canvas.
+ */
+function fireTouch(el, x, y) {
+    if (typeof TouchEvent !== "function" || typeof Touch !== "function") return;
+    try {
+        const t = new Touch({
+            identifier: Date.now() & 0xffff,
+            target: el, clientX: x, clientY: y,
+            screenX: x, screenY: y, pageX: x, pageY: y,
+            radiusX: 12, radiusY: 12, rotationAngle: 0, force: 1,
+        });
+        el.dispatchEvent(new TouchEvent("touchstart", {
+            bubbles:true, cancelable:true, composed:true, view:window,
+            touches:[t], targetTouches:[t], changedTouches:[t],
+        }));
+        el.dispatchEvent(new TouchEvent("touchend", {
+            bubbles:true, cancelable:true, composed:true, view:window,
+            touches:[], targetTouches:[], changedTouches:[t],
+        }));
+    } catch(_) {}
 }
 
 function isElementVisible(el) {
@@ -170,13 +207,13 @@ function simulateFullClick(el) {
         const r = el.getBoundingClientRect();
         const x = r.left + r.width / 2;
         const y = r.top + r.height / 2;
-        
+
         let target = el;
         try {
             const topEl = document.elementFromPoint(x, y);
             if (topEl && !topEl.closest("#dc-pill")) target = topEl;
         } catch (_) {}
-        
+
         const opts = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y, view: window };
 
         if (typeof PointerEvent === "function") {
@@ -205,11 +242,11 @@ function pressGlobalAdvanceKeys() {
             const code = key === " " ? "Space" : "Enter";
             const keyCode = key === " " ? 32 : 13;
             const evOpts = { key, code, keyCode, which: keyCode, bubbles: true, cancelable: true, composed: true, view: window };
-            
+
             window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
             document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
             if (document.body) document.body.dispatchEvent(new KeyboardEvent("keydown", evOpts));
-            
+
             window.dispatchEvent(new KeyboardEvent("keyup", evOpts));
             document.dispatchEvent(new KeyboardEvent("keyup", evOpts));
             if (document.body) document.body.dispatchEvent(new KeyboardEvent("keyup", evOpts));
@@ -217,7 +254,8 @@ function pressGlobalAdvanceKeys() {
     } catch (_) {}
 }
 
-async function clickSquare(sq, insetRatio, flipped, pressMs = 75) {
+async function clickSquare(sq, insetRatio, flipped, pressMs) {
+    pressMs = pressMs ?? (IS_MOBILE ? 110 : 65);
     const canvas = await waitCanvas();
     function coords(r) {
         const iw = r.width * insetRatio, ih = r.height * insetRatio;
@@ -227,6 +265,8 @@ async function clickSquare(sq, insetRatio, flipped, pressMs = 75) {
         return { x: r.left + iw + (col + 0.5) * bw / 8, y: r.top + ih + (row + 0.5) * bh / 8 };
     }
     const d = coords(canvas.getBoundingClientRect());
+    // Mobile: fire touch events FIRST so Android recognises the interaction
+    if (IS_MOBILE) fireTouch(canvas, d.x, d.y);
     firePointer(canvas, "pointerdown", d.x, d.y, 1);
     fireMouse(canvas, "mousedown", d.x, d.y, 1);
     await sleep(pressMs);
@@ -237,7 +277,8 @@ async function clickSquare(sq, insetRatio, flipped, pressMs = 75) {
 }
 
 // Click Canvas at fractional column / row coordinate
-async function clickCanvasFraction(colFrac, rowFrac, insetRatio, flipped, pressMs = 60) {
+async function clickCanvasFraction(colFrac, rowFrac, insetRatio, flipped, pressMs) {
+    pressMs = pressMs ?? (IS_MOBILE ? 90 : 55);
     const canvas = findCanvas();
     if (!canvas) return;
     const r = canvas.getBoundingClientRect();
@@ -248,6 +289,7 @@ async function clickCanvasFraction(colFrac, rowFrac, insetRatio, flipped, pressM
     const x = r.left + iw + col * (bw / 8);
     const y = r.top + ih + row * (bh / 8);
 
+    if (IS_MOBILE) fireTouch(canvas, x, y);
     firePointer(canvas, "pointerdown", x, y, 1);
     fireMouse(canvas, "mousedown", x, y, 1);
     await sleep(pressMs);
@@ -266,7 +308,7 @@ function isPawnPromotion(fen, uci) {
     if (!uci || uci.length < 4) return false;
     if (uci.length >= 5) return true;
     const from = uci.slice(0, 2), to = uci.slice(2, 4);
-    
+
     if (_Chess) {
         try {
             const c = new _Chess(fen);
@@ -276,13 +318,13 @@ function isPawnPromotion(fen, uci) {
             }
         } catch (_) {}
     }
-    
+
     try {
         const rows = fen.split(" ")[0].split("/");
         const fileIdx = from.charCodeAt(0) - 97;
         const rankNum = Number(from[1]);
         const side = fen.split(" ")[1] || "w";
-        
+
         if (side === "w" && rankNum === 7 && to[1] === "8") {
             let col = 0;
             for (const ch of rows[1]) {
@@ -330,7 +372,7 @@ function autoClickPromotion() {
     if (allTextNodes.length > 0) {
         const promoTitle = allTextNodes[0];
         const tr = promoTitle.getBoundingClientRect();
-        
+
         let promoCard = promoTitle.parentElement;
         for (let i = 0; i < 4; i++) {
             if (promoCard && promoCard.getBoundingClientRect().height > 50) break;
@@ -341,7 +383,7 @@ function autoClickPromotion() {
             // Find all piece candidates inside the promotion card
             const pieces = Array.from(promoCard.querySelectorAll('button, svg, img, div[role="button"], li, div[tabindex="0"], div[class*="piece" i]'))
                 .filter(p => !p.contains(promoTitle) && p.getBoundingClientRect().width > 15 && p.getBoundingClientRect().height > 15);
-            
+
             if (pieces.length > 0) {
                 // The Queen is ALWAYS the 1st option (leftmost piece)
                 pieces.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
@@ -354,13 +396,13 @@ function autoClickPromotion() {
         // Hard-dispatch absolute coordinates to hit the Queen based on layout (under text, left aligned)
         const qx = tr.left + (tr.width * 0.15) + 15;
         const qy = tr.bottom + 35;
-        
+
         const topEl = document.elementFromPoint(qx, qy);
         if (topEl && !topEl.closest("#dc-pill")) {
             simulateFullClick(topEl);
             clicked = true;
         }
-        
+
         const opts = { bubbles: true, cancelable: true, composed: true, clientX: qx, clientY: qy, screenX: qx, screenY: qy, view: window };
         if (typeof PointerEvent === "function") {
             window.dispatchEvent(new PointerEvent("pointerdown", { ...opts, button: 0, buttons: 1, pointerId: 1, pointerType: "mouse", isPrimary: true }));
@@ -403,7 +445,7 @@ async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
 
     for (let attempt = 0; attempt < 10; attempt++) {
         await sleep(80);
-        
+
         // 1. Try DOM promotion click
         autoClickPromotion();
 
@@ -488,7 +530,7 @@ function findInstantMate(fen){
     try{
         const c=new _Chess(fen);
         const moves=c.moves({verbose:true});
-        
+
         for(const m of moves){
             c.move(m);
             if(c.isCheckmate()){
@@ -667,7 +709,7 @@ function onMatchData(data){
 
     if(match.boardFen) BOT_S.currentFen=match.boardFen;
     if(Array.isArray(match.moveHistory)) BOT_S.moveHistory=[...match.moveHistory];
-    
+
     if(match.endCondition||match.status==="finished"){
         BOT_S.status="idle";
         BOT_S.matchId=null;
@@ -692,11 +734,14 @@ function onMatchData(data){
     renderPanel();
 }
 
-async function waitCanvasChange(baseline, timeout=1000, interval=25){
+async function waitCanvasChange(baseline, timeout, interval){
+    // Mobile boards redraw slower — use longer timeout and poll interval
+    timeout  = timeout  ?? (IS_MOBILE ? 1600 : 900);
+    interval = interval ?? (IS_MOBILE ? 40   : 25);
     const canvas=findCanvas();
-    if(!canvas||baseline===null) { await sleep(80); return; }
+    if(!canvas||baseline===null) { await sleep(IS_MOBILE ? 120 : 80); return; }
     const ctx=canvas.getContext("2d");
-    if(!ctx) { await sleep(80); return; }
+    if(!ctx) { await sleep(IS_MOBILE ? 120 : 80); return; }
     const w=Math.min(canvas.width,64), h=Math.min(canvas.height,64);
     const t0=Date.now();
     while(Date.now()-t0<timeout){
@@ -704,9 +749,10 @@ async function waitCanvasChange(baseline, timeout=1000, interval=25){
         try{
             const d=ctx.getImageData(0,0,w,h).data;
             let s=0; for(let i=0;i<d.length;i+=16) s=(s*31+d[i]+d[i+1]+d[i+2])|0;
-            if(s!==baseline) return;
+            if(s!==baseline) return; // board changed — piece selected or move registered
         }catch(_){ return; }
     }
+    // Timeout: canvas didn't change. Proceed anyway — don't get stuck.
 }
 
 function canvasHash(){
@@ -723,73 +769,83 @@ function canvasHash(){
 }
 
 async function takeTurn(){
+    // Mutex: only one takeTurn runs at a time — prevents race-condition double-moves on mobile
+    if(BOT_S._takeTurnLock) return;
     if(BOT_S.status==="thinking"||BOT_S.status==="playing") return;
+    BOT_S._takeTurnLock = true;
     BOT_S.status="thinking"; renderPanel();
 
-    let move=null, fenUsed=null;
-    let attempts=0;
-    while(attempts++<2){
-        fenUsed=BOT_S.currentFen;
-        move=await getBestMove(fenUsed);
-        if(!move){BOT_S.status="idle";renderPanel();return;}
-        if(fenUsed===BOT_S.currentFen) break;
-        if(_Chess){
-            try{
-                const c=new _Chess(BOT_S.currentFen);
-                const ok=c.moves({verbose:true}).some(m=>m.from+m.to+(m.promotion??"")===move);
-                if(ok) break;
-            }catch(_){}
+    try {
+        let move=null, fenUsed=null;
+        let attempts=0;
+        while(attempts++<2){
+            fenUsed=BOT_S.currentFen;
+            move=await getBestMove(fenUsed);
+            if(!move) break;
+            if(fenUsed===BOT_S.currentFen) break;
+            if(_Chess){
+                try{
+                    const c=new _Chess(BOT_S.currentFen);
+                    const ok=c.moves({verbose:true}).some(m=>m.from+m.to+(m.promotion??"")===move);
+                    if(ok) break;
+                }catch(_){}
+            }
+            move=null;
         }
-        move=null;
-    }
-    if(!move){BOT_S.status="idle";renderPanel();return;}
+        if(!move){BOT_S.status="idle";renderPanel();return;}
 
-    BOT_S.status="playing"; BOT_S.lastMove=move; renderPanel();
-    try{
+        BOT_S.status="playing"; BOT_S.lastMove=move; renderPanel();
+
         const flip=BOT_CFG.flipped||BOT_S.playerColor==="black";
-        const hashBefore=canvasHash();
-        
-        // True pawn promotion detection
+
+        // Pawn promotion & castling detection
         const isPromotion = isPawnPromotion(BOT_S.currentFen, move);
         let finalUci = move;
         if(isPromotion && finalUci.length === 4) finalUci += (move[4] || "q");
+        const isCastle = (move==="e1g1"||move==="e1c1"||move==="e8g8"||move==="e8c8");
 
-        // Castling detection
-        const isCastle = (move === "e1g1" || move === "e1c1" || move === "e8g8" || move === "e8c8");
+        // ── Step 1: Click source square ──────────────────────────────────
+        const hashBefore=canvasHash();
+        await clickSquare(move.slice(0,2), BOT_CFG.boardInsetRatio, flip);
 
-        // 1. Click source square
-        await clickSquare(move.slice(0,2),BOT_CFG.boardInsetRatio,flip);
-        await waitCanvasChange(hashBefore, 600, 25);
-        await sleep(Math.max(BOT_CFG.clickDelay, 140));
+        // KEY FIX: Wait for board to redraw (piece-highlight) before clicking dest.
+        // Without this, on mobile the dest click fires before src is registered → stuck moves.
+        await waitCanvasChange(hashBefore);
+        await sleep(BOT_CFG.clickDelay);
 
-        // 2. Click destination square
-        await clickSquare(move.slice(2,4),BOT_CFG.boardInsetRatio,flip);
-        
-        // 2b. Universal Castling Support (Clicks Rook as fallback if board expects king-to-rook)
-        if (isCastle) {
-            await sleep(80);
-            const rookSq = move === "e1g1" ? "h1" : move === "e1c1" ? "a1" : move === "e8g8" ? "h8" : "a8";
-            await clickSquare(rookSq, BOT_CFG.boardInsetRatio, flip, 50);
+        // ── Step 2: Click destination square ─────────────────────────────
+        const hashAfterSrc=canvasHash();
+        await clickSquare(move.slice(2,4), BOT_CFG.boardInsetRatio, flip);
+
+        // ── Step 2b: Castling fallback (click rook) ───────────────────────
+        if(isCastle){
+            await sleep(IS_MOBILE ? 130 : 80);
+            const rookSq = move==="e1g1"?"h1":move==="e1c1"?"a1":move==="e8g8"?"h8":"a8";
+            await clickSquare(rookSq, BOT_CFG.boardInsetRatio, flip);
         }
 
-        // 3. Handle Promotion if true pawn promotion
+        // ── Step 3: Wait for dest click to register ───────────────────────
+        await waitCanvasChange(hashAfterSrc);
+
+        // ── Step 4: Promotion ─────────────────────────────────────────────
         if(isPromotion){
             const promoChar = move[4] || "q";
             await handlePromotion(move.slice(2,4), promoChar, BOT_CFG.boardInsetRatio, flip);
         }
-        
+
         await sleep(BOT_CFG.moveDelay);
         if(BOT_CFG.postMoves&&BOT_S.matchId) await postMove(finalUci);
-        
-        // Increment move count only when move completes
+
         BOT_S.movesPlayed++;
-        renderPanel();
         BOT_S.status="waiting";
     } catch(e){
         BOT_S.status="idle";
+    } finally {
+        BOT_S._takeTurnLock = false;
+        renderPanel();
     }
-    renderPanel();
 }
+
 
 async function postMove(uci){
     if(!BOT_S.matchId) return;
@@ -932,16 +988,23 @@ async function solveChallenge(ch){
         renderPanel();
         if(step.kind==="player"){
             if(!validUCI(step.move)) continue;
+            // ── Click source ──────────────────────────────────────────────
             const h0=canvasHash();
             await clickSquare(step.move.slice(0,2),SOL_CFG.boardInsetRatio,SOL_CFG.flipped);
-            await waitCanvasChange(h0, 500, 25);
+            // Wait for piece-highlight before clicking destination (fixes stuck moves)
+            await waitCanvasChange(h0);
             await sleep(SOL_CFG.clickDelay);
+            // ── Click destination ─────────────────────────────────────────
+            const h1=canvasHash();
             await clickSquare(step.move.slice(2,4),SOL_CFG.boardInsetRatio,SOL_CFG.flipped);
+            // Wait for move to register before next step
+            await waitCanvasChange(h1);
             await sleep(SOL_CFG.moveDelay);
         } else {
+            // Enemy move: wait for board animation
             const h1=canvasHash();
-            await waitCanvasChange(h1, SOL_CFG.enemyDelay, 25);
-            await sleep(60);
+            await waitCanvasChange(h1, SOL_CFG.enemyDelay);
+            await sleep(IS_MOBILE ? 100 : 60);
         }
     }
     if(SOL_CFG.autoContinue){
@@ -960,9 +1023,9 @@ async function solveAll(){
             await solveChallenge(ch);
             SOL_STATE.currentIdx++;
             renderPanel();
-            await sleep(200);
+            await sleep(IS_MOBILE ? 350 : 200);
         }
-        await sleep(300);
+        await sleep(IS_MOBILE ? 500 : 300);
         advanceFlow();
     } finally {
         SOL_STATE.solving=false;
@@ -1109,36 +1172,40 @@ let _panel = null;
 
 const STYLE = `
 #dc-pill{
-    position:fixed;bottom:20px;right:20px;
-    background:rgba(15,23,42,0.96);border:1px solid rgba(255,255,255,0.14);
-    border-radius:12px;padding:10px 14px;
+    position:fixed;bottom:20px;right:16px;
+    background:rgba(15,23,42,0.97);border:1px solid rgba(255,255,255,0.14);
+    border-radius:14px;padding:11px 15px;
     font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     color:#f8fafc;z-index:2147483647;user-select:none;
-    box-shadow:0 8px 24px rgba(0,0,0,0.6);
-    display:flex;flex-direction:column;gap:8px;
-    min-width:190px;cursor:grab;touch-action:none;
+    box-shadow:0 8px 28px rgba(0,0,0,0.65);
+    display:flex;flex-direction:column;gap:9px;
+    min-width:${IS_MOBILE ? '160px' : '190px'};cursor:grab;touch-action:none;
+    font-size:${IS_MOBILE ? '13px' : '12px'};
 }
-#dc-pill.dragging{cursor:grabbing;opacity:0.92;}
+#dc-pill.dragging{cursor:grabbing;opacity:0.90;}
 .dc-header{display:flex;align-items:center;justify-content:space-between;gap:8px;}
-.dc-brand{font-weight:900;color:#58cc02;font-size:12px;letter-spacing:0.5px;}
+.dc-brand{font-weight:900;color:#58cc02;font-size:${IS_MOBILE ? '13px' : '12px'};letter-spacing:0.5px;}
 .dc-status{
-    font-size:10px;font-weight:800;padding:2px 6px;border-radius:4px;
+    font-size:${IS_MOBILE ? '10px' : '9px'};font-weight:800;padding:3px 7px;border-radius:5px;
     background:#334155;color:#94a3b8;text-transform:uppercase;
 }
 .dc-status.active{background:#15803d;color:#fff;}
 .dc-status.thinking{background:#b45309;color:#fff;}
 .dc-body-row{display:flex;align-items:center;justify-content:space-between;gap:12px;}
 .dc-btn{
-    background:#58cc02;color:#000;border:none;border-radius:6px;
-    padding:6px 10px;font-size:11px;font-weight:800;cursor:pointer;
+    background:#58cc02;color:#000;border:none;border-radius:8px;
+    padding:${IS_MOBILE ? '9px 13px' : '6px 10px'};
+    font-size:${IS_MOBILE ? '12px' : '11px'};font-weight:800;cursor:pointer;
+    min-height:${IS_MOBILE ? '38px' : '28px'};
 }
 .dc-btn.off{background:#334155;color:#94a3b8;}
-.dc-stat-box{display:flex;align-items:center;gap:10px;}
+.dc-stat-box{display:flex;align-items:center;gap:12px;}
 .dc-stat-item{display:flex;flex-direction:column;align-items:center;}
-.dc-stat-num{font-size:16px;font-weight:900;line-height:1;}
+.dc-stat-num{font-size:${IS_MOBILE ? '18px' : '16px'};font-weight:900;line-height:1;}
 .dc-stat-num.win{color:#58cc02;}
 .dc-stat-num.mov{color:#38bdf8;}
-.dc-stat-label{font-size:8px;color:#64748b;font-weight:700;text-transform:uppercase;margin-top:2px;}
+.dc-stat-label{font-size:${IS_MOBILE ? '9px' : '8px'};color:#64748b;font-weight:700;text-transform:uppercase;margin-top:2px;}
+.dc-mobile-tag{font-size:8px;color:#4a6fa5;text-align:center;font-weight:600;letter-spacing:0.4px;}
 `;
 
 function injectCSS(){
@@ -1173,7 +1240,8 @@ function createPanel(){
                 <span class="dc-stat-label">Moves</span>
             </div>
         </div>
-    </div>`;
+    </div>
+    ${IS_MOBILE ? '<div class="dc-mobile-tag">📱 MOBILE MODE</div>' : ''}`;
 
     document.body.appendChild(_panel);
 
@@ -1282,8 +1350,11 @@ async function _autoPollLoop(){
     if(_pollRunning) return;
     _pollRunning = true;
 
+    // Mobile: slower poll prevents race conditions with touch-event processing
+    const POLL_MS = IS_MOBILE ? 260 : 110;
+
     while(true){
-        await sleep(100);
+        await sleep(POLL_MS);
         if(!BOT_CFG.autoPlay) continue;
 
         // 1. Always dismiss promotion modals immediately
@@ -1293,8 +1364,8 @@ async function _autoPollLoop(){
             renderPanel();
         }
 
-        // 2. Aggressively advance flow (Continue, Claim, Next, Start Match, Rematch)
-        if(BOT_S.status !== "playing"){
+        // 2. Advance flow only when not mid-move
+        if(BOT_S.status !== "playing" && BOT_S.status !== "thinking"){
             advanceFlow();
         }
 
@@ -1311,11 +1382,15 @@ async function _autoPollLoop(){
                     await _fetchMatchState();
                 }
 
-                if(isOurTurn(BOT_S.currentFen) && BOT_S.status !== "thinking" && BOT_S.status !== "playing"){
+                // Guard: only call takeTurn if mutex is free and it's our turn
+                if(isOurTurn(BOT_S.currentFen) &&
+                   !BOT_S._takeTurnLock &&
+                   BOT_S.status !== "thinking" &&
+                   BOT_S.status !== "playing"){
                     BOT_S.status = "our_turn";
                     renderPanel();
                     if(BOT_CFG.autoPlay){
-                        takeTurn();
+                        takeTurn(); // fire-and-forget; mutex prevents re-entry
                     }
                 }
             } else if(SOL_STATE.challenges.length && !SOL_STATE.solving){
