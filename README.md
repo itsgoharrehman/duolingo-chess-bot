@@ -1,12 +1,12 @@
 <div align="center">
 
-# 🦉♟️ Duolingo Chess Auto-Match Bot (Universal Pro Edition)
+# 🦉♟️ Duolingo Chess Auto-Match Bot (Universal Master Edition)
 
-**An ultra-fast, automated Tampermonkey Userscript that blitzes Duolingo Chess matches in under 15 moves, solves puzzle lessons, handles pawn promotions flawlessly, auto-clicks all reward screens, and plays endlessly on both PC and Android!**
+**An ultra-fast, automated Userscript with a built-in offline chess engine that blitzes Duolingo Chess matches in under 15 moves, solves puzzle lessons, handles pawn promotions, auto-clicks rewards, and plays seamlessly on both PC and Android!**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/Version-5.0.0-brightgreen.svg)]()
-[![Engine](https://img.shields.io/badge/Engine-Stockfish%2016%2B%20%26%20Lichess%20GM-blue.svg)]()
+[![Version](https://img.shields.io/badge/Version-5.1.0-brightgreen.svg)]()
+[![Engine](https://img.shields.io/badge/Engine-Embedded%20Minimax%20%2B%20Stockfish-blue.svg)]()
 [![Platform](https://img.shields.io/badge/Platform-PC%20%26%20Android-58cc02.svg)]()
 
 </div>
@@ -15,49 +15,36 @@
 
 ## 🌟 Single Universal Script (`duolingo-chess-ai.user.js`)
 
-One clean, unified script works across all devices (Desktop Chrome/Firefox/Edge and Android Kiwi Browser / Firefox Mobile):
-
-- **Main Script**: [`duolingo-chess-ai.user.js`](file:///c:/Users/Gohar%20Rehman/Desktop/DUOLINGO-CHESS/duolingo-chess-ai.user.js)
+- **Unified Master Userscript**: [`duolingo-chess-ai.user.js`](file:///c:/Users/Gohar%20Rehman/Desktop/DUOLINGO-CHESS/duolingo-chess-ai.user.js)
 
 ---
 
-## ⚡ Key Fixes & Enhancements
+## ⚡ Key Improvements (v5.1.0)
 
-- 🎯 **Single-Pass Verified Move Execution**:
-  - Eliminates rapid duplicate attempts and piece sticking.
-  - Taps source square then target square with exact timing. Only falls back to a clean drag if the tap was unacknowledged.
-  - Never clicks arbitrary corners during moves.
-- 🛡️ **Active Anti-Freeze Watchdog**:
-  - Automatically recovers and re-triggers turn calculations if stuck in `thinking`, `playing`, or `waiting` state for more than 2.5–3.5 seconds.
-  - Prevents permanent lockouts.
-- 📱 **Authentic Pointer & Touch Event Synthesis**:
-  - Emulates standard `TouchEvent` (`touchstart`, `touchmove`, `touchend`) alongside `PointerEvent` (`pointerdown`, `pointermove`, `pointerup`) and `MouseEvent`.
-- 📊 **Accurate Move Counter**:
-  - `Moves Played` increments only when board state/FEN actually updates.
-- 👑 **Automatic Pawn Promotion**:
-  - Instantly promotes to Queen (`q`) through DOM dialogs or in-canvas pickers.
-- 🔄 **Continuous Auto-Match & Puzzle Solver**:
-  - Clicks through all reward screens (XP, Victory, Streak) and automatically starts the next match against Oscar.
+1. **Embedded High-Performance Chess Engine (`FastChess`)**:
+   - 100% self-contained minimax alpha-beta chess engine embedded directly inside the userscript.
+   - **Zero Network Hang**: Calculates guaranteed legal, tactical moves in **15ms** without depending on external web servers or getting blocked by Duolingo's CSP.
+   - Built-in instant checkmate scanner (mate in 1/2) and lethal Wayward Queen opening book.
+
+2. **Touch Drag & Move Execution for Android / Mobile**:
+   - Dispatches authentic continuous `pointerdown` + `touchstart` ➔ smooth multi-step `pointermove` + `touchmove` path ➔ `pointerup` + `touchend` with consistent touch identifiers.
+   - Guarantees pieces reach their destination square on mobile touchscreens without staying suspended.
+
+3. **Active Watchdog & Anti-Freeze Timer**:
+   - Immediately breaks out of stuck `thinking` or `playing` states after 2.5s.
+   - Automatically re-triggers turn calculations if idle on our turn for > 2.0s.
 
 ---
 
-## 🚀 Quick Setup & Installation
+## 🚀 Quick Installation
 
 ### On PC / Desktop (Chrome, Edge, Firefox, Brave):
 1. Install **[Tampermonkey](https://www.tampermonkey.net/)**.
-2. Open Tampermonkey ➔ **Create a new script**.
-3. Copy and paste all code from [`duolingo-chess-ai.user.js`](file:///c:/Users/Gohar%20Rehman/Desktop/DUOLINGO-CHESS/duolingo-chess-ai.user.js).
-4. Save the script (`Ctrl + S`).
-5. Open [duolingo.com](https://www.duolingo.com/) and play!
+2. Create a new userscript and copy-paste the contents of [`duolingo-chess-ai.user.js`](file:///c:/Users/Gohar%20Rehman/Desktop/DUOLINGO-CHESS/duolingo-chess-ai.user.js).
+3. Save (`Ctrl + S`) and navigate to [duolingo.com](https://www.duolingo.com/).
 
 ### On Android / Mobile (Kiwi Browser / Firefox Android):
 1. Install **Kiwi Browser** or **Firefox for Android**.
-2. Install the **Tampermonkey** or **Violentmonkey** extension.
-3. Create a new userscript and paste all code from [`duolingo-chess-ai.user.js`](file:///c:/Users/Gohar%20Rehman/Desktop/DUOLINGO-CHESS/duolingo-chess-ai.user.js).
+2. Install **Tampermonkey** or **Violentmonkey**.
+3. Create a new userscript and paste [`duolingo-chess-ai.user.js`](file:///c:/Users/Gohar%20Rehman/Desktop/DUOLINGO-CHESS/duolingo-chess-ai.user.js).
 4. Save and open [duolingo.com](https://www.duolingo.com/).
-
----
-
-## 📄 License
-
-Distributed under the **MIT License**. See [`LICENSE`](file:///c:/Users/Gohar%20Rehman/Desktop/DUOLINGO-CHESS/LICENSE) for more details.
