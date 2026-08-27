@@ -1,14 +1,17 @@
 // ==UserScript==
 // @name         Duolingo Chess Solver & Auto-Match Bot (Universal Master Edition)
 // @namespace    duochess-universal
-// @version      5.1.0
-// @description  Single universal ultra-stable Duolingo Chess bot with built-in embedded chess engine, zero network hang, mobile touch drag & tap execution, instant checkmate, and auto-match loop.
+// @version      5.2.0
+// @description  Single universal ultra-stable Duolingo Chess bot with Stockfish 16+, Lichess Cloud Eval, embedded engine fallback, zero network hang, mobile touch drag & tap execution, instant checkmate, and auto-match loop.
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
-// @grant        none
-// @connect      https://stockfish.online
-// @connect      https://lichess.org
+// @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
+// @connect      stockfish.online
+// @connect      *.stockfish.online
+// @connect      lichess.org
+// @connect      *.lichess.org
 // @license      MIT
 // ==/UserScript==
 
@@ -510,33 +513,100 @@ class FastChess {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  MOVE FINDER WITH EMBEDDED ENGINE & FALLBACKS
+//  MOVE FINDER WITH STOCKFISH 16+, LICHESS CLOUD & EMBEDDED ENGINE
 // ══════════════════════════════════════════════════════════════════════════════
+
+function gmHttpFetch(url, timeoutMs = 3500) {
+    return new Promise((resolve, reject) => {
+        const gmReq = (typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : (typeof GM !== "undefined" && GM.xmlHttpRequest ? GM.xmlHttpRequest : null));
+        if (gmReq) {
+            try {
+                gmReq({
+                    method: "GET",
+                    url: url,
+                    timeout: timeoutMs,
+                    headers: {
+                        "Accept": "application/json"
+                    },
+                    onload: (res) => {
+                        if (res.status >= 200 && res.status < 300) {
+                            try {
+                                resolve(JSON.parse(res.responseText));
+                            } catch (e) {
+                                reject(e);
+                            }
+                        } else {
+                            reject(new Error(`HTTP ${res.status}`));
+                        }
+                    },
+                    onerror: (err) => reject(err),
+                    ontimeout: () => reject(new Error("Timeout"))
+                });
+                return;
+            } catch (_) {}
+        }
+
+        // Fallback to fetch if GM_xmlhttpRequest is not available
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), timeoutMs);
+        fetch(url, { signal: controller.signal })
+            .then(r => {
+                clearTimeout(tid);
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                return r.json();
+            })
+            .then(resolve)
+            .catch(reject);
+    });
+}
 
 function getBookMove(fen) {
     const fenSimple = fen.split(" ").slice(0, 4).join(" ");
-    const whiteBook = {
+    const openingBook = {
+        // Standard high-level openings for White
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -": "e2e4",
-        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "d1h5",
-        "r1bqkbnr/pppp1ppp/2n5/4p2Q/4P3/8/PPPP1PPP/RNB1KBNR w KQkq -": "f1c4",
-        "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1KBNR w KQkq -": "h5f7",
-        "r1bqkbnr/pppp1p1p/2n3p1/4p2Q/2B1P3/8/PPPP1PPP/RNB1KBNR w KQkq -": "h5f3",
-        "r1bqkb1r/pppp1p1p/2n2np1/4p3/2B1P3/5Q2/PPPP1PPP/RNB1KBNR w KQkq -": "f3b3",
-        "r1bqkb1r/pppp1p1p/5np1/4p3/2BnP3/1Q6/PPPP1PPP/RNB1KBNR w KQkq -": "c4f7",
+        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "g1f3", // King's Knight
+        "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -": "f1c4", // Italian Game
+        "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq -": "d2d3", // Giuoco Pianissimo
+        "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq -": "c2c3", // Main Italian line
+        "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "g1f3", // Open Sicilian
+        "rnbqkbnr/pppp1ppp/4p3/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "d2d4", // French Defense
+        "rnbqkbnr/ppppp1pp/8/5p2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "e4f5", // vs Dutch
+        "rnbqkbnr/pppppp1p/8/6p1/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "d2d4", // vs Borg / Grob
+
+        // High-level defense for Black
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3": "e7e5", // Open Game
+        "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3": "d7d5", // Queen's Pawn Game
+        "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq -": "d7d5", // Reti Opening
+        "rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq c3": "e7e5", // English Opening
+        "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq -": "b8c6", // Defense against Nf3
+        "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq -": "g8f6", // Two Knights Defense
+        "r1bqkbnr/pppp1ppp/2n5/4p3/1bB1P3/5N2/PPPP1PPP/RNBQK2R b KQkq -": "g8f6",
+        "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq -": "a7a6", // Ruy Lopez Morphy Defense
     };
-    return whiteBook[fenSimple] ?? null;
+    return openingBook[fenSimple] ?? null;
+}
+
+async function getLichessCloudMove(fen) {
+    try {
+        const encodedFen = encodeURIComponent(fen);
+        const data = await gmHttpFetch(`https://lichess.org/api/cloud-eval?fen=${encodedFen}&multiPv=1`, 2000);
+        if (data && Array.isArray(data.pvs) && data.pvs[0] && data.pvs[0].moves) {
+            const mv = data.pvs[0].moves.split(/\s+/)[0];
+            if (validUCI(mv)) return mv;
+        }
+        return null;
+    } catch (_) {
+        return null;
+    }
 }
 
 async function getFastStockfishMove(fen) {
     try {
         const encodedFen = encodeURIComponent(fen);
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 600); // Fast 600ms network timeout
-        const r = await fetch(`https://stockfish.online/api/s/v2.php?fen=${encodedFen}&depth=12&mode=bestmove`, { signal: controller.signal });
-        clearTimeout(timeoutId);
-        if (!r.ok) return null;
-        const data = await r.json();
-        if (!data.success || !data.bestmove) return null;
+        const depth = BOT_CFG.stockfishDepth || 15;
+        const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodedFen}&depth=${depth}&mode=bestmove`, 4500);
+        if (!data || !data.success || !data.bestmove) return null;
         const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
         return validUCI(mv) ? mv : null;
     } catch (_) {
@@ -546,38 +616,41 @@ async function getFastStockfishMove(fen) {
 
 async function getBestMove(fen) {
     try {
-        // 1. Opening Book
+        // 1. Opening Book for instant, infallible master opening lines
         const bookMv = getBookMove(fen);
         if (bookMv) {
-            BOT_S.engineName = "Lethal Book";
+            BOT_S.engineName = "Book Opening";
             return bookMv;
         }
 
+        // 2. Parallel Grandmaster Evaluation: Lichess Cloud (Depth 45+) + Stockfish 16+ (Depth 15)
+        const lichessPromise = getLichessCloudMove(fen).then(mv => mv ? { name: "Lichess Cloud", move: mv } : null).catch(() => null);
+        const stockfishPromise = getFastStockfishMove(fen).then(mv => mv ? { name: "Stockfish 16+", move: mv } : null).catch(() => null);
+
+        // Try Lichess cloud first (usually <100ms)
+        const cloudRes = await Promise.race([
+            lichessPromise,
+            new Promise(r => setTimeout(() => r(null), 1200))
+        ]);
+
+        if (cloudRes && cloudRes.move) {
+            BOT_S.engineName = cloudRes.name;
+            return cloudRes.move;
+        }
+
+        // Await either Stockfish 16+ or Lichess
+        const [lRes, sfRes] = await Promise.all([lichessPromise, stockfishPromise]);
+        if (sfRes && sfRes.move) {
+            BOT_S.engineName = sfRes.name;
+            return sfRes.move;
+        }
+        if (lRes && lRes.move) {
+            BOT_S.engineName = lRes.name;
+            return lRes.move;
+        }
+
+        // 3. Fallback: Local Minimax Engine (only if offline)
         const engine = new FastChess(fen);
-
-        // 2. Embedded Instant Checkmate Scanner
-        const instantMate = engine.getBestMove(1);
-        const testEngine = engine.clone();
-        if (instantMate) {
-            const mFrom = instantMate.slice(0, 2), mTo = instantMate.slice(2, 4);
-            const pseudo = engine.getLegalMoves().find(m => engine.moveToUci(m) === instantMate);
-            if (pseudo) {
-                testEngine.makeMove(pseudo);
-                if (testEngine.getLegalMoves().length === 0 && testEngine.inCheck(testEngine.turn)) {
-                    BOT_S.engineName = "Mate 1/2";
-                    return instantMate;
-                }
-            }
-        }
-
-        // 3. Fast Online Stockfish evaluation (600ms timeout)
-        const sfMv = await getFastStockfishMove(fen);
-        if (sfMv) {
-            BOT_S.engineName = "Stockfish";
-            return sfMv;
-        }
-
-        // 4. Embedded Engine Minimax Alpha-Beta Evaluation (Guaranteed legal move in 15ms)
         const bestMv = engine.getBestMove(3);
         if (bestMv) {
             BOT_S.engineName = "Embedded GM";
@@ -721,7 +794,6 @@ function dispatchMobileTouch(type, el, x, y, id = 0) {
                 bubbles: true,
                 cancelable: true,
                 composed: true,
-                view: window,
                 touches: touchList,
                 targetTouches: touchList,
                 changedTouches: changedList,
@@ -733,8 +805,8 @@ function dispatchMobileTouch(type, el, x, y, id = 0) {
 
     try {
         const ev = document.createEvent("TouchEvent") || document.createEvent("UIEvent");
-        if (ev.initTouchEvent) {
-            ev.initTouchEvent(type, true, true, window, 1, Math.round(x), Math.round(y), Math.round(x), Math.round(y), false, false, false, false, touchList, touchList, changedList);
+        if (ev && ev.initTouchEvent) {
+            ev.initTouchEvent(type, true, true, null, 1, Math.round(x), Math.round(y), Math.round(x), Math.round(y), false, false, false, false, touchList, touchList, changedList);
             el.dispatchEvent(ev);
         }
     } catch (_) {}
@@ -750,7 +822,6 @@ function dispatchPointer(type, el, x, y, buttons = 0, button = 0, id = 1) {
         bubbles: true,
         cancelable: true,
         composed: true,
-        view: window,
         clientX: rx,
         clientY: ry,
         screenX: rx,
@@ -766,22 +837,37 @@ function dispatchPointer(type, el, x, y, buttons = 0, button = 0, id = 1) {
     };
 
     let pe;
-    if (typeof PointerEvent === "function") {
-        try { pe = new PointerEvent(type, opts); } catch (_) { pe = new MouseEvent(type, opts); }
-    } else {
-        pe = new MouseEvent(type, opts);
+    try {
+        if (typeof PointerEvent === "function") {
+            pe = new PointerEvent(type, opts);
+        } else {
+            pe = new MouseEvent(type, opts);
+        }
+    } catch (_) {
+        try {
+            pe = new MouseEvent(type, opts);
+        } catch (_) {
+            try {
+                pe = document.createEvent("MouseEvents");
+                pe.initMouseEvent(type, true, true, null, 1, rx, ry, rx, ry, false, false, false, false, button, null);
+            } catch (_) {}
+        }
     }
 
-    try {
-        Object.defineProperty(pe, "offsetX", { value: rx - r.left, configurable: true });
-        Object.defineProperty(pe, "offsetY", { value: ry - r.top,  configurable: true });
-        Object.defineProperty(pe, "pageX",   { value: px, configurable: true });
-        Object.defineProperty(pe, "pageY",   { value: py, configurable: true });
-        Object.defineProperty(pe, "x",       { value: rx, configurable: true });
-        Object.defineProperty(pe, "y",       { value: ry, configurable: true });
-    } catch (_) {}
+    if (pe) {
+        try {
+            Object.defineProperty(pe, "offsetX", { value: rx - r.left, configurable: true });
+            Object.defineProperty(pe, "offsetY", { value: ry - r.top,  configurable: true });
+            Object.defineProperty(pe, "pageX",   { value: px, configurable: true });
+            Object.defineProperty(pe, "pageY",   { value: py, configurable: true });
+            Object.defineProperty(pe, "x",       { value: rx, configurable: true });
+            Object.defineProperty(pe, "y",       { value: ry, configurable: true });
+        } catch (_) {}
 
-    el.dispatchEvent(pe);
+        try {
+            el.dispatchEvent(pe);
+        } catch (_) {}
+    }
 }
 
 async function dispatchTap(el, x, y, pressMs = 30) {
@@ -872,8 +958,7 @@ async function clickCanvasFraction(colFrac, rowFrac, insetRatio, flipped, pressM
 
 /**
  * Verified Robust Move Execution:
- * On Mobile: Drag directly with smooth touchmove path (primary for mobile web canvas) + Dual Tap fallback.
- * On Desktop: Dual Tap (primary for desktop mouse) + Drag fallback.
+ * On Desktop & Mobile: Dual Click/Tap + Drag fallback + Castling King/Rook dual fallbacks.
  */
 async function executeMove(uci, insetRatio, flipped) {
     if (!validUCI(uci)) return false;
@@ -887,33 +972,44 @@ async function executeMove(uci, insetRatio, flipped) {
 
     const h0 = canvasHash();
 
-    if (IS_MOBILE) {
-        // Mobile Primary: Physical Drag with smooth touchpath
-        await dispatchDrag(canvas, pFrom.x, pFrom.y, pTo.x, pTo.y);
-        let moved = await waitCanvasChange(h0, 350);
-        if (moved) return true;
+    // 1. Primary: Dual Click / Tap
+    await dispatchTap(canvas, pFrom.x, pFrom.y, 30);
+    await sleep(BOT_CFG.clickDelay || 40);
+    await dispatchTap(canvas, pTo.x, pTo.y, 30);
 
-        // Mobile Fallback: Precision Dual Tap
-        await sleep(40);
-        await dispatchTap(canvas, pFrom.x, pFrom.y, 45);
-        await sleep(BOT_CFG.clickDelay || 80);
-        await dispatchTap(canvas, pTo.x, pTo.y, 45);
-        moved = await waitCanvasChange(h0, 350);
-        return moved;
-    } else {
-        // Desktop Primary: Dual Click
-        await dispatchTap(canvas, pFrom.x, pFrom.y, 30);
-        await sleep(BOT_CFG.clickDelay || 40);
-        await dispatchTap(canvas, pTo.x, pTo.y, 30);
-        let moved = await waitCanvasChange(h0, 220);
-        if (moved) return true;
+    let moved = await waitCanvasChange(h0, 250);
+    if (moved) return true;
 
-        // Desktop Fallback: Drag
-        await sleep(25);
-        await dispatchDrag(canvas, pFrom.x, pFrom.y, pTo.x, pTo.y);
-        moved = await waitCanvasChange(h0, 250);
-        return moved;
+    // 2. Drag Fallback
+    await sleep(25);
+    await dispatchDrag(canvas, pFrom.x, pFrom.y, pTo.x, pTo.y);
+    moved = await waitCanvasChange(h0, 280);
+    if (moved) return true;
+
+    // 3. Castling Special Target Fallback (e1g1, e1c1, e8g8, e8c8)
+    const isCastling = (uci === "e1g1" || uci === "e1c1" || uci === "e8g8" || uci === "e8c8");
+    if (isCastling) {
+        let rookSq = null;
+        if (uci === "e1g1") rookSq = "h1";
+        else if (uci === "e1c1") rookSq = "a1";
+        else if (uci === "e8g8") rookSq = "h8";
+        else if (uci === "e8c8") rookSq = "a8";
+
+        if (rookSq) {
+            const pRook = getSquareCoords(canvas, rookSq, insetRatio, flipped);
+            await dispatchTap(canvas, pFrom.x, pFrom.y, 35);
+            await sleep(50);
+            await dispatchTap(canvas, pRook.x, pRook.y, 35);
+            moved = await waitCanvasChange(h0, 250);
+            if (moved) return true;
+
+            await dispatchDrag(canvas, pFrom.x, pFrom.y, pRook.x, pRook.y);
+            moved = await waitCanvasChange(h0, 250);
+            if (moved) return true;
+        }
     }
+
+    return moved;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -924,37 +1020,65 @@ function isPawnPromotion(fen, uci) {
     if (!uci || uci.length < 4) return false;
     if (uci.length >= 5) return true;
     const from = uci.slice(0, 2), to = uci.slice(2, 4);
+    try {
+        const game = new FastChess(fen);
+        const sqIdx = game._sqToIdx(from);
+        const piece = game.board[sqIdx];
+        if (piece) {
+            return piece.type === "p" && ((from[1] === "7" && to[1] === "8") || (from[1] === "2" && to[1] === "1"));
+        }
+    } catch (_) {}
     return (from[1] === "7" && to[1] === "8") || (from[1] === "2" && to[1] === "1");
 }
 
 function autoClickPromotion() {
     let clicked = false;
 
-    // 1. Text node search
+    // 1. Find the "PAWN PROMOTION" popup container on screen
     try {
         const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
         let n;
         while (n = walk.nextNode()) {
             const txt = (n.nodeValue || "").trim().toUpperCase();
-            if (txt === "PAWN PROMOTION" || txt.includes("PAWN PROMOTION") || txt === "PROMOTION") {
-                if (n.parentElement && !n.parentElement.closest("#dc-pill")) {
-                    const card = n.parentElement.closest('div[class*="dialog" i], div[class*="card" i], div[class*="modal" i]') || n.parentElement;
-                    const pieces = Array.from(card.querySelectorAll('button, svg, img, div[role="button"], li, div[tabindex="0"]'))
-                        .filter(p => p.getBoundingClientRect().width > 18);
-                    if (pieces.length > 0) {
-                        pieces.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-                        simulateFullClick(pieces[0]);
+            if (txt.includes("PROMOTION")) {
+                let parent = n.parentElement;
+                for (let level = 0; level < 5; level++) {
+                    if (!parent || parent === document.body) break;
+                    if (parent.closest("#dc-pill")) break;
+
+                    const items = Array.from(parent.querySelectorAll('svg, button, img, [role="button"], div[tabindex], div[class*="piece" i]'))
+                        .filter(el => {
+                            if (el.closest("#dc-pill")) return false;
+                            const r = el.getBoundingClientRect();
+                            return r.width >= 16 && r.height >= 16 && r.width <= 140 && r.height <= 140;
+                        });
+
+                    if (items.length > 0) {
+                        // Sort horizontally: Queen is ALWAYS the 1st / leftmost piece in Duolingo
+                        items.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+                        const queen = items[0];
+                        const qr = queen.getBoundingClientRect();
+                        const qx = qr.left + qr.width / 2;
+                        const qy = qr.top + qr.height / 2;
+
+                        dispatchTap(queen, qx, qy, 35);
+                        simulateFullClick(queen);
+                        if (queen.parentElement) {
+                            simulateFullClick(queen.parentElement);
+                        }
                         clicked = true;
+                        return true;
                     }
+                    parent = parent.parentElement;
                 }
             }
         }
     } catch (_) {}
 
-    // 2. Direct Queen Selectors
+    // 2. Direct Queen Selectors & Modal Dialogs
     const queenSelectors = [
         `[data-piece="queen"]`, `[data-piece="q"]`, `[data-piece="Q"]`,
-        `[data-test="queen"]`, `[data-test="player-piece-queen"]`, `[data-test*="promotion-queen" i]`, `[data-test*="promote-queen" i]`,
+        `[data-test*="queen" i]`, `[data-test*="player-piece-queen" i]`, `[data-test*="promotion-queen" i]`,
         `button[aria-label*="queen" i]`, `div[role="button"][aria-label*="queen" i]`,
         `img[alt*="queen" i]`, `img[src*="queen" i]`, `svg[data-piece*="queen" i]`
     ];
@@ -962,39 +1086,52 @@ function autoClickPromotion() {
     for (const sel of queenSelectors) {
         const els = document.querySelectorAll(sel);
         for (const el of els) {
-            if (isElementVisible(el) && !isForbiddenButton(el)) {
+            if (isElementVisible(el) && !isForbiddenButton(el) && !el.closest("#dc-pill")) {
                 simulateFullClick(el);
                 clicked = true;
+                return true;
             }
         }
     }
+
+    // 3. Fallback: Search all visible SVG icons inside the canvas bounding area (above board)
+    try {
+        const canvas = findCanvas();
+        if (canvas) {
+            const cr = canvas.getBoundingClientRect();
+            const svgs = Array.from(document.querySelectorAll("svg"))
+                .filter(s => {
+                    if (s.closest("#dc-pill")) return false;
+                    const r = s.getBoundingClientRect();
+                    return r.left >= cr.left && r.right <= cr.right && r.top >= cr.top && r.bottom <= cr.bottom && r.width >= 18 && r.height >= 18;
+                });
+            if (svgs.length >= 4) {
+                svgs.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+                simulateFullClick(svgs[0]);
+                clicked = true;
+                return true;
+            }
+        }
+    } catch (_) {}
+
+    // 4. Global keyboard promotion triggers
+    try {
+        for (const key of ["q", "Q", "1"]) {
+            const evOpts = { key, code: `Key${key.toUpperCase()}`, keyCode: key.toUpperCase().charCodeAt(0), bubbles: true, cancelable: true, composed: true };
+            window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+            document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+        }
+    } catch (_) {}
+
     return clicked;
 }
 
 async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
-    const destFile = destSq.charCodeAt(0) - 97;
-    const destRank = Number(destSq[1]);
-
-    for (let attempt = 0; attempt < 8; attempt++) {
-        await sleep(IS_MOBILE ? 60 : 35);
+    for (let attempt = 0; attempt < 10; attempt++) {
+        await sleep(50);
         if (autoClickPromotion()) return true;
-
-        if (destRank === 8) {
-            if (destFile < 4) {
-                await clickCanvasFraction(0.5, 2.0, insetRatio, flipped, 30);
-                await clickSquare("a6", insetRatio, flipped, 30);
-            } else {
-                await clickCanvasFraction(4.5, 2.0, insetRatio, flipped, 30);
-                await clickSquare("e6", insetRatio, flipped, 30);
-            }
-        } else if (destRank === 1) {
-            if (destFile < 4) {
-                await clickCanvasFraction(0.5, 5.0, insetRatio, flipped, 30);
-                await clickSquare("a3", insetRatio, flipped, 30);
-            } else {
-                await clickCanvasFraction(4.5, 5.0, insetRatio, flipped, 30);
-                await clickSquare("e3", insetRatio, flipped, 30);
-            }
+        if (destSq) {
+            await clickSquare(destSq, insetRatio, flipped, 30);
         }
     }
     return true;
@@ -1049,7 +1186,7 @@ function pressGlobalAdvanceKeys() {
         for (const key of ["Enter", " "]) {
             const code = key === " " ? "Space" : "Enter";
             const keyCode = key === " " ? 32 : 13;
-            const evOpts = { key, code, keyCode, which: keyCode, bubbles: true, cancelable: true, composed: true, view: window };
+            const evOpts = { key, code, keyCode, which: keyCode, bubbles: true, cancelable: true, composed: true };
             window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
             document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
             window.dispatchEvent(new KeyboardEvent("keyup", evOpts));
@@ -1065,27 +1202,30 @@ function advanceFlow() {
     pressGlobalAdvanceKeys();
 
     const candidates = Array.from(document.querySelectorAll(
-        'button, [role="button"], a, div[data-test*="button" i], div[data-test*="next" i], div[data-test*="continue" i]'
+        'button, [role="button"], a, div[data-test*="button" i], div[data-test*="next" i], div[data-test*="continue" i], div[data-test*="start" i], div[data-test*="play" i]'
     ));
 
     const keywords = [
-        "continue", "tiếp tục", "tiep tuc", "next", "claim", "claim reward", "claim xp",
-        "play against oscar", "play oscar", "start match", "start game", "play match",
-        "play again", "rematch", "start lesson", "start", "play", "let's go", "done", "check", "got it", "finish", "practice", "ready"
+        "continue", "tiếp tục", "tiep tuc", "next", "claim", "claim reward", "claim xp", "claim prize",
+        "play against oscar", "play oscar", "start match", "start game", "play match", "play now",
+        "play again", "rematch", "start lesson", "start session", "start", "play", "let's go", "done",
+        "check", "got it", "finish", "practice", "ready", "keep going", "continue learning"
     ];
 
-    for (const btn of candidates) {
+    for (const rawBtn of candidates) {
+        const btn = rawBtn.closest("button, [role='button'], a") || rawBtn;
         if (!isElementVisible(btn) || isForbiddenButton(btn)) continue;
 
-        const dataTest = (btn.getAttribute("data-test") || "").toLowerCase();
-        const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
+        const dataTest = (btn.getAttribute("data-test") || rawBtn.getAttribute("data-test") || "").toLowerCase();
+        const ariaLabel = (btn.getAttribute("aria-label") || rawBtn.getAttribute("aria-label") || "").toLowerCase();
         const txt = (btn.innerText || btn.textContent || "").trim().toLowerCase();
 
         if (dataTest.includes("player-next") || dataTest.includes("player-start-button") ||
             dataTest.includes("continue-button") || dataTest.includes("claim-button") ||
             dataTest.includes("start-button") || dataTest.includes("next-button") ||
             dataTest.includes("bottom-nav-next-button") || dataTest.includes("play-button") ||
-            dataTest.includes("rematch-button") || dataTest.includes("session-end-button")) {
+            dataTest.includes("rematch-button") || dataTest.includes("session-end-button") ||
+            dataTest.includes("challenge-next") || dataTest.includes("player-practice-button")) {
             simulateFullClick(btn);
             return true;
         }
@@ -1104,13 +1244,12 @@ function advanceFlow() {
 //  MATCH TURN EXECUTION & AUTO-MATCH
 // ══════════════════════════════════════════════════════════════════════════════
 
-const MATCHES_RE = /\/chess\/\d+\/\d+\/matches(?:\/([^/?#]+))?/;
-const MOVES_RE   = /\/chess\/\d+\/\d+\/matches\/[^/?#]+\/moves/;
-const isMatchURL = url => MATCHES_RE.test(url) && !MOVES_RE.test(url);
+const MATCHES_RE = /\/chess\b.*\/matches(?:\/([^/?#]+))?/;
+const MOVES_RE   = /\/chess\b.*\/matches\/[^/?#]+\/moves/;
+const isMatchURL = url => typeof url === "string" && !MOVES_RE.test(url) && (MATCHES_RE.test(url) || /\/matches\b/i.test(url) || /\/chess-match\b/i.test(url));
 const isSessionURL = url => typeof url === "string" && /\/sessions(?:[/?#]|$)/i.test(url);
 
 function isOurTurn(fen) {
-    if (!BOT_S.matchId) return false;
     const s = fenSide(fen);
     const color = (BOT_S.playerColor || "white").toLowerCase();
     return (s === "w" && color === "white") || (s === "b" && color === "black");
@@ -1118,10 +1257,10 @@ function isOurTurn(fen) {
 
 function onMatchData(data) {
     if (!data) return;
-    const match = data.match ?? (data.boardFen ? data : null);
+    const match = data.match ?? (data.boardFen ? data : null) ?? (data.chessMatch ? data.chessMatch : null);
     if (!match) return;
 
-    const uid = location.pathname.match(/\/(\d+)\//)?.[1] ?? "";
+    const uid = getUserId();
     if (match.id && BOT_S.matchId !== match.id) {
         BOT_S.matchId = match.id;
         BOT_S.movesPlayed = 0;
@@ -1152,14 +1291,16 @@ function onMatchData(data) {
         return;
     }
 
-    if (match.status === "active" && isOurTurn(BOT_S.currentFen)) {
-        if (!BOT_S.turnInProgress && BOT_S.status !== "playing") {
-            setStatus("our_turn");
-            if (BOT_CFG.autoPlay) setTimeout(takeTurn, BOT_CFG.thinkDelay);
-        }
-    } else {
-        if (BOT_S.status !== "thinking" && BOT_S.status !== "playing") {
-            setStatus("waiting");
+    if (match.status === "active" || match.status === "in_progress" || !match.status) {
+        if (isOurTurn(BOT_S.currentFen)) {
+            if (!BOT_S.turnInProgress && BOT_S.status !== "playing") {
+                setStatus("our_turn");
+                if (BOT_CFG.autoPlay) setTimeout(takeTurn, BOT_CFG.thinkDelay);
+            }
+        } else {
+            if (BOT_S.status !== "thinking" && BOT_S.status !== "playing") {
+                setStatus("waiting");
+            }
         }
     }
 }
@@ -1301,39 +1442,96 @@ async function solveAll() {
 // ══════════════════════════════════════════════════════════════════════════════
 
 let _lastSessionUrl = null;
-const _origFetch = window.fetch;
-window.fetch = async function(...args) {
-    const res = await _origFetch.apply(this, args);
-    const url = typeof args[0] === "string" ? args[0] : (args[0]?.url ?? res.url ?? "");
-    if (args[1]?.headers) {
-        const h = args[1].headers;
-        const tok = typeof h.get === "function" ? h.get("authorization") : h["authorization"];
-        if (tok) BOT_S.authToken = tok;
-    }
-    if (isMatchURL(url))   res.clone().json().then(onMatchData).catch(() => {});
-    if (isSessionURL(url)) { _lastSessionUrl = url; res.clone().json().then(processSession).catch(() => {}); }
-    return res;
-};
 
-const _xOpen = XMLHttpRequest.prototype.open;
-const _xSend = XMLHttpRequest.prototype.send;
-XMLHttpRequest.prototype.open = function(m, url, ...r) {
-    this.__dcUrl = String(url ?? "");
-    return _xOpen.call(this, m, url, ...r);
-};
-XMLHttpRequest.prototype.send = function(...args) {
-    const url = this.__dcUrl;
-    if (isMatchURL(url) || isSessionURL(url)) {
-        this.addEventListener("load", () => {
+function getUserId() {
+    if (BOT_S.userId && BOT_S.userId !== "0") return BOT_S.userId;
+    try {
+        const cMatch = document.cookie.match(/(?:duo_user_id|logged_in_user_id|userId)=([0-9]+)/i);
+        if (cMatch && cMatch[1]) {
+            BOT_S.userId = cMatch[1];
+            return BOT_S.userId;
+        }
+    } catch (_) {}
+    try {
+        const duoState = JSON.parse(localStorage.getItem("duo.state") || "{}");
+        const uid = duoState.user?.id || duoState.currentUserId || duoState.userId;
+        if (uid) {
+            BOT_S.userId = String(uid);
+            return BOT_S.userId;
+        }
+    } catch (_) {}
+    try {
+        const entries = performance.getEntriesByType("resource");
+        for (const e of entries) {
+            const m = e.name.match(/\/chess\/\d+\/(\d+)\//) || e.name.match(/[?&]user(?:Id)?=(\d+)/);
+            if (m && m[1]) {
+                BOT_S.userId = m[1];
+                return BOT_S.userId;
+            }
+        }
+    } catch (_) {}
+    return "0";
+}
+
+function hookNetwork(targetWin) {
+    if (!targetWin || targetWin.__dcHooked) return;
+    try { targetWin.__dcHooked = true; } catch (_) {}
+
+    const origFetch = targetWin.fetch;
+    if (typeof origFetch === "function") {
+        targetWin.fetch = async function(...args) {
+            const res = await origFetch.apply(this, args);
             try {
-                const d = this.responseType === "json" ? this.response : JSON.parse(this.responseText);
-                if (isMatchURL(url)) onMatchData(d);
-                if (isSessionURL(url)) { _lastSessionUrl = url; processSession(d); }
+                const url = typeof args[0] === "string" ? args[0] : (args[0]?.url ?? res.url ?? "");
+                if (args[1]?.headers) {
+                    const h = args[1].headers;
+                    const tok = typeof h?.get === "function" ? h.get("authorization") : (h?.["authorization"] || h?.["Authorization"]);
+                    if (tok) BOT_S.authToken = tok;
+                }
+                const uidMatch = url.match(/\/chess\/\d+\/(\d+)\//);
+                if (uidMatch && uidMatch[1]) BOT_S.userId = uidMatch[1];
+
+                if (isMatchURL(url)) {
+                    res.clone().json().then(onMatchData).catch(() => {});
+                } else if (isSessionURL(url)) {
+                    _lastSessionUrl = url;
+                    res.clone().json().then(processSession).catch(() => {});
+                }
             } catch (_) {}
-        });
+            return res;
+        };
     }
-    return _xSend.apply(this, args);
-};
+
+    if (targetWin.XMLHttpRequest && targetWin.XMLHttpRequest.prototype) {
+        const proto = targetWin.XMLHttpRequest.prototype;
+        const origOpen = proto.open;
+        const origSend = proto.send;
+        proto.open = function(m, url, ...r) {
+            this.__dcUrl = String(url ?? "");
+            return origOpen.call(this, m, url, ...r);
+        };
+        proto.send = function(...args) {
+            const url = this.__dcUrl;
+            if (isMatchURL(url) || isSessionURL(url)) {
+                this.addEventListener("load", () => {
+                    try {
+                        const d = this.responseType === "json" ? this.response : JSON.parse(this.responseText);
+                        const uidMatch = url.match(/\/chess\/\d+\/(\d+)\//);
+                        if (uidMatch && uidMatch[1]) BOT_S.userId = uidMatch[1];
+                        if (isMatchURL(url)) onMatchData(d);
+                        if (isSessionURL(url)) { _lastSessionUrl = url; processSession(d); }
+                    } catch (_) {}
+                });
+            }
+            return origSend.apply(this, args);
+        };
+    }
+}
+
+hookNetwork(window);
+if (typeof unsafeWindow !== "undefined" && unsafeWindow !== window) {
+    hookNetwork(unsafeWindow);
+}
 
 async function _fetchSession() {
     let sessionUrl = _lastSessionUrl;
@@ -1348,7 +1546,8 @@ async function _fetchSession() {
         try {
             const hdrs = {};
             if (BOT_S.authToken) hdrs["Authorization"] = BOT_S.authToken;
-            const r = await _origFetch(sessionUrl, { method: "GET", headers: hdrs, credentials: "include" });
+            const fetchFn = (typeof unsafeWindow !== "undefined" && unsafeWindow.fetch) || window.fetch;
+            const r = await fetchFn(sessionUrl, { method: "GET", headers: hdrs, credentials: "include" });
             if (r.ok) {
                 const data = await r.json();
                 processSession(data);
@@ -1360,29 +1559,57 @@ async function _fetchSession() {
 }
 
 async function _fetchMatchState() {
-    if (!BOT_S.matchId) return;
-    const uid = location.pathname.match(/\/(\d+)\//)?.[1] ?? "0";
+    const uid = getUserId();
     const hdrs = {};
     if (BOT_S.authToken) hdrs["Authorization"] = BOT_S.authToken;
-    try {
-        const res = await _origFetch(`/chess/1/${uid}/matches/${BOT_S.matchId}`, { method: "GET", headers: hdrs, credentials: "include" });
-        if (!res.ok) return;
-        const data = await res.json();
-        onMatchData(data);
-    } catch (_) {}
+
+    const urlsToTry = [];
+    if (BOT_S.matchId) {
+        urlsToTry.push(`/chess/1/${uid}/matches/${BOT_S.matchId}`);
+        urlsToTry.push(`/chess/matches/${BOT_S.matchId}`);
+    }
+    if (uid && uid !== "0") {
+        urlsToTry.push(`/chess/1/${uid}/matches`);
+    }
+
+    for (const u of urlsToTry) {
+        try {
+            const fetchFn = (typeof unsafeWindow !== "undefined" && unsafeWindow.fetch) || window.fetch;
+            const res = await fetchFn(u, { method: "GET", headers: hdrs, credentials: "include" });
+            if (res.ok) {
+                const data = await res.json();
+                onMatchData(data);
+                if (BOT_S.matchId) return true;
+            }
+        } catch (_) {}
+    }
+    return false;
 }
 
 async function recoverState() {
     try {
         const entries = performance.getEntriesByType("resource");
         for (const e of entries) {
-            const matchHit = e.name.match(/\/chess\/\d+\/\d+\/matches\/([^/?#]+)/);
-            if (matchHit && matchHit[1] && !e.name.includes('/moves')) {
-                BOT_S.matchId = matchHit[1];
+            const matchHit = e.name.match(/\/chess\/\d+\/(\d+)\/matches\/([^/?#]+)/);
+            if (matchHit && matchHit[2] && !e.name.includes('/moves')) {
+                BOT_S.userId = matchHit[1];
+                BOT_S.matchId = matchHit[2];
+                await _fetchMatchState();
+                return;
+            }
+            const matchHit2 = e.name.match(/\/matches\/([^/?#]+)/);
+            if (matchHit2 && matchHit2[1] && !e.name.includes('/moves')) {
+                BOT_S.matchId = matchHit2[1];
                 await _fetchMatchState();
                 return;
             }
         }
+
+        const canvas = findCanvas();
+        if (canvas || location.pathname.includes("chess")) {
+            await _fetchMatchState();
+        }
+
         if (!location.pathname.includes("chess")) {
             await _fetchSession();
         }
@@ -1393,53 +1620,46 @@ async function recoverState() {
 //  SVG DEVICE ICONS & DRAGGABLE HUD (ZERO EMOJIS)
 // ══════════════════════════════════════════════════════════════════════════════
 
-const SVG_ICONS = {
-    desktop: `<svg class="dc-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#58cc02" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`,
-    tablet:  `<svg class="dc-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#58cc02" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>`,
-    mobile:  `<svg class="dc-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#58cc02" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>`
-};
-
-const DEVICE_ICON_SVG = SVG_ICONS[DEVICE_TYPE] || SVG_ICONS.desktop;
-
 let _panel = null;
 
 const STYLE = `
 #dc-pill{
-    position:fixed;bottom:20px;right:16px;
-    background:rgba(15,23,42,0.97);border:1px solid rgba(255,255,255,0.14);
-    border-radius:14px;padding:10px 14px;
-    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    position:fixed;bottom:18px;right:18px;
+    background:rgba(15,23,42,0.96);border:1px solid rgba(148,163,184,0.25);
+    border-radius:10px;padding:8px 12px;
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace, sans-serif;
     color:#f8fafc;z-index:2147483647;user-select:none;
-    box-shadow:0 8px 28px rgba(0,0,0,0.65);
-    display:flex;flex-direction:column;gap:8px;
-    min-width:${IS_MOBILE ? '155px' : '185px'};cursor:grab;touch-action:none;
-    font-size:${IS_MOBILE ? '12px' : '12px'};
+    box-shadow:0 6px 22px rgba(0,0,0,0.6);
+    display:flex;flex-direction:column;gap:6px;
+    min-width:185px;max-width:235px;cursor:grab;touch-action:none;
+    font-size:11px;
 }
-#dc-pill.dragging{cursor:grabbing;opacity:0.90;}
-.dc-header{display:flex;align-items:center;justify-content:space-between;gap:8px;}
-.dc-brand-wrap{display:flex;align-items:center;gap:6px;}
-.dc-icon{display:inline-block;vertical-align:middle;flex-shrink:0;}
-.dc-brand{font-weight:900;color:#58cc02;font-size:${IS_MOBILE ? '12px' : '12px'};letter-spacing:0.5px;}
+#dc-pill.dragging{cursor:grabbing;opacity:0.92;}
+.dc-row{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.dc-title{font-weight:900;color:#58cc02;font-size:11px;letter-spacing:0.6px;}
 .dc-status{
-    font-size:${IS_MOBILE ? '9px' : '9px'};font-weight:800;padding:3px 7px;border-radius:5px;
+    font-size:9px;font-weight:800;padding:2px 6px;border-radius:4px;
     background:#334155;color:#94a3b8;text-transform:uppercase;letter-spacing:0.3px;
 }
-.dc-status.active{background:#15803d;color:#fff;}
-.dc-status.thinking{background:#b45309;color:#fff;}
-.dc-body-row{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.dc-status.active{background:#16a34a;color:#fff;}
+.dc-status.thinking{background:#d97706;color:#fff;}
+.dc-info{
+    font-size:10px;color:#94a3b8;border-top:1px solid #1e293b;padding-top:4px;
+    display:flex;align-items:center;justify-content:space-between;gap:6px;
+}
+.dc-engine{color:#38bdf8;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px;}
+.dc-move{color:#facc15;font-family:monospace;font-weight:800;font-size:10px;}
+.dc-actions{border-top:1px solid #1e293b;padding-top:4px;display:flex;align-items:center;justify-content:space-between;gap:8px;}
 .dc-btn{
-    background:#58cc02;color:#000;border:none;border-radius:8px;
-    padding:${IS_MOBILE ? '7px 11px' : '6px 10px'};
-    font-size:${IS_MOBILE ? '11px' : '11px'};font-weight:800;cursor:pointer;
-    min-height:${IS_MOBILE ? '32px' : '28px'};
+    background:#58cc02;color:#000;border:none;border-radius:5px;
+    padding:4px 8px;font-size:10px;font-weight:800;cursor:pointer;
+    line-height:1.2;
 }
 .dc-btn.off{background:#334155;color:#94a3b8;}
-.dc-stat-box{display:flex;align-items:center;gap:12px;}
-.dc-stat-item{display:flex;flex-direction:column;align-items:center;}
-.dc-stat-num{font-size:${IS_MOBILE ? '16px' : '16px'};font-weight:900;line-height:1;}
-.dc-stat-num.win{color:#58cc02;}
-.dc-stat-num.mov{color:#38bdf8;}
-.dc-stat-label{font-size:${IS_MOBILE ? '8px' : '8px'};color:#64748b;font-weight:700;text-transform:uppercase;margin-top:2px;}
+.dc-stats{display:flex;align-items:center;gap:10px;font-size:10px;font-weight:700;}
+.dc-stat{color:#64748b;}
+.dc-w-num{color:#58cc02;font-weight:800;font-size:11px;}
+.dc-m-num{color:#38bdf8;font-weight:800;font-size:11px;}
 `;
 
 function injectCSS() {
@@ -1458,24 +1678,19 @@ function createPanel() {
     _panel.id = "dc-pill";
 
     _panel.innerHTML = `
-    <div class="dc-header">
-        <div class="dc-brand-wrap">
-            ${DEVICE_ICON_SVG}
-            <span class="dc-brand">DUOCHESS</span>
-        </div>
+    <div class="dc-row">
+        <span class="dc-title">DUOCHESS</span>
         <span class="dc-status" id="dc-st">${esc(BOT_S.status)}</span>
     </div>
-    <div class="dc-body-row">
+    <div class="dc-info">
+        <span class="dc-engine" id="dc-eng">${esc(BOT_S.engineName || "Stockfish 16+")}</span>
+        <span class="dc-move" id="dc-mv">${esc(BOT_S.lastMove || "-")}</span>
+    </div>
+    <div class="dc-actions">
         <button id="dc-tg" class="dc-btn ${BOT_CFG.autoPlay ? '' : 'off'}">${BOT_CFG.autoPlay ? 'AUTO: ON' : 'AUTO: OFF'}</button>
-        <div class="dc-stat-box">
-            <div class="dc-stat-item">
-                <span class="dc-stat-num win" id="dc-w">${BOT_S.matchesWon}</span>
-                <span class="dc-stat-label">Wins</span>
-            </div>
-            <div class="dc-stat-item">
-                <span class="dc-stat-num mov" id="dc-m">${BOT_S.movesPlayed}</span>
-                <span class="dc-stat-label">Moves</span>
-            </div>
+        <div class="dc-stats">
+            <span class="dc-stat">WINS: <b id="dc-w" class="dc-w-num">${BOT_S.matchesWon}</b></span>
+            <span class="dc-stat">MOVES: <b id="dc-m" class="dc-m-num">${BOT_S.movesPlayed}</b></span>
         </div>
     </div>`;
 
@@ -1501,11 +1716,26 @@ function makeDraggable(el) {
     let startX = 0, startY = 0;
     let initialLeft = 0, initialTop = 0;
 
+    function keepInBounds() {
+        if (!el || !el.isConnected) return;
+        const rect = el.getBoundingClientRect();
+        const maxL = Math.max(10, window.innerWidth - rect.width - 12);
+        const maxT = Math.max(10, window.innerHeight - rect.height - 12);
+        if (rect.right > window.innerWidth || rect.left < 0 || rect.bottom > window.innerHeight || rect.top < 0) {
+            el.style.left = Math.min(maxL, Math.max(10, rect.left)) + "px";
+            el.style.top = Math.min(maxT, Math.max(10, rect.top)) + "px";
+            el.style.bottom = "auto";
+            el.style.right = "auto";
+        }
+    }
+
+    window.addEventListener("resize", keepInBounds);
+
     try {
         const saved = JSON.parse(localStorage.getItem(STORE_KEY + "_pos") || "null");
         if (saved && typeof saved.left === "number" && typeof saved.top === "number") {
-            const maxL = Math.max(10, window.innerWidth - 210);
-            const maxT = Math.max(10, window.innerHeight - 80);
+            const maxL = Math.max(10, window.innerWidth - 240);
+            const maxT = Math.max(10, window.innerHeight - 90);
             el.style.left = Math.min(maxL, Math.max(10, saved.left)) + "px";
             el.style.top = Math.min(maxT, Math.max(10, saved.top)) + "px";
             el.style.bottom = "auto";
@@ -1572,16 +1802,25 @@ function makeDraggable(el) {
 function renderPanel() {
     if (!_panel) return;
     const st = _panel.querySelector("#dc-st");
+    const eng = _panel.querySelector("#dc-eng");
+    const mv = _panel.querySelector("#dc-mv");
     const w  = _panel.querySelector("#dc-w");
     const m  = _panel.querySelector("#dc-m");
+    const tg = _panel.querySelector("#dc-tg");
 
     if (st) {
         st.textContent = BOT_S.status.toUpperCase();
         const isAct = BOT_S.status === "playing" || BOT_S.status === "our_turn";
         st.className = `dc-status ${isAct ? 'active' : BOT_S.status === 'thinking' ? 'thinking' : ''}`;
     }
+    if (eng) eng.textContent = BOT_S.engineName || "Stockfish 16+";
+    if (mv) mv.textContent = BOT_S.lastMove || "-";
     if (w) w.textContent = BOT_S.matchesWon;
     if (m) m.textContent = BOT_S.movesPlayed;
+    if (tg) {
+        tg.textContent = BOT_CFG.autoPlay ? "AUTO: ON" : "AUTO: OFF";
+        tg.className = `dc-btn ${BOT_CFG.autoPlay ? '' : 'off'}`;
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1605,9 +1844,9 @@ async function _autoPollLoop() {
             setStatus("idle");
         }
 
-        // Watchdog 2: If it's our turn and idle/waiting with no move attempted for > 2.0s, re-trigger takeTurn
-        if (BOT_S.matchId && isOurTurn(BOT_S.currentFen) && !BOT_S.turnInProgress && BOT_S.status !== "playing" && BOT_S.status !== "thinking") {
-            if (Date.now() - _lastMoveAttemptTime > 2000) {
+        // Watchdog 2: If it's our turn and idle/waiting with no move attempted for > 1.5s, re-trigger takeTurn
+        if (isOurTurn(BOT_S.currentFen) && !BOT_S.turnInProgress && BOT_S.status !== "playing" && BOT_S.status !== "thinking") {
+            if (Date.now() - _lastMoveAttemptTime > 1500) {
                 setStatus("our_turn");
                 if (BOT_CFG.autoPlay) {
                     takeTurn();
@@ -1636,6 +1875,11 @@ async function _autoPollLoop() {
                 }
             } else if (SOL_STATE.challenges.length && !SOL_STATE.solving) {
                 solveAll();
+            } else if (isOurTurn(BOT_S.currentFen) && (BOT_S.status === "idle" || BOT_S.status === "waiting")) {
+                if (!BOT_S.turnInProgress && (Date.now() - _lastMoveAttemptTime > 1500)) {
+                    setStatus("our_turn");
+                    takeTurn();
+                }
             }
         }
     }
