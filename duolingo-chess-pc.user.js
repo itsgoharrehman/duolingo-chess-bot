@@ -516,18 +516,21 @@ class FastChess {
 //  MOVE FINDER WITH STOCKFISH 16+, LICHESS CLOUD & EMBEDDED ENGINE
 // ══════════════════════════════════════════════════════════════════════════════
 
-function gmHttpFetch(url, timeoutMs = 3500) {
+function gmHttpFetch(url, timeoutMs = 4000, opts = {}) {
     return new Promise((resolve, reject) => {
         const gmReq = (typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : (typeof GM !== "undefined" && GM.xmlHttpRequest ? GM.xmlHttpRequest : null));
+        const method = opts.method || "GET";
+        const data = opts.data || null;
+        const headers = { "Accept": "application/json", ...(opts.headers || {}) };
+
         if (gmReq) {
             try {
                 gmReq({
-                    method: "GET",
+                    method: method,
                     url: url,
+                    data: data,
                     timeout: timeoutMs,
-                    headers: {
-                        "Accept": "application/json"
-                    },
+                    headers: headers,
                     onload: (res) => {
                         if (res.status >= 200 && res.status < 300) {
                             try {
@@ -546,10 +549,13 @@ function gmHttpFetch(url, timeoutMs = 3500) {
             } catch (_) {}
         }
 
-        // Fallback to fetch if GM_xmlhttpRequest is not available
+        // Fallback to fetch
         const controller = new AbortController();
         const tid = setTimeout(() => controller.abort(), timeoutMs);
-        fetch(url, { signal: controller.signal })
+        const fetchOpts = { method, headers, signal: controller.signal };
+        if (data) fetchOpts.body = data;
+
+        fetch(url, fetchOpts)
             .then(r => {
                 clearTimeout(tid);
                 if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -590,7 +596,7 @@ function getBookMove(fen) {
 async function getLichessCloudMove(fen) {
     try {
         const encodedFen = encodeURIComponent(fen);
-        const data = await gmHttpFetch(`https://lichess.org/api/cloud-eval?fen=${encodedFen}&multiPv=1`, 2000);
+        const data = await gmHttpFetch(`https://lichess.org/api/cloud-eval?fen=${encodedFen}&multiPv=1`, 1500);
         if (data && Array.isArray(data.pvs) && data.pvs[0] && data.pvs[0].moves) {
             const mv = data.pvs[0].moves.split(/\s+/)[0];
             if (validUCI(mv)) return mv;
@@ -605,10 +611,27 @@ async function getFastStockfishMove(fen) {
     try {
         const encodedFen = encodeURIComponent(fen);
         const depth = BOT_CFG.stockfishDepth || 15;
-        const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodedFen}&depth=${depth}&mode=bestmove`, 4500);
+        const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodedFen}&depth=${depth}&mode=bestmove`, 3500);
         if (!data || !data.success || !data.bestmove) return null;
         const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
         return validUCI(mv) ? mv : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function getChessApiMove(fen) {
+    try {
+        const data = await gmHttpFetch("https://chess-api.com/v1", 3500, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            data: JSON.stringify({ fen: fen, depth: 15 })
+        });
+        if (data && (data.move || (data.from && data.to))) {
+            const mv = data.move || (data.from + data.to + (data.promotion || ""));
+            return validUCI(mv) ? mv : null;
+        }
+        return null;
     } catch (_) {
         return null;
     }
@@ -623,30 +646,33 @@ async function getBestMove(fen) {
             return bookMv;
         }
 
-        // 2. Parallel Grandmaster Evaluation: Lichess Cloud (Depth 45+) + Stockfish 16+ (Depth 15)
+        // 2. Multi-Provider Grandmaster Parallel Evaluation (Lichess Cloud + Stockfish Online + Chess-API)
         const lichessPromise = getLichessCloudMove(fen).then(mv => mv ? { name: "Lichess Cloud", move: mv } : null).catch(() => null);
-        const stockfishPromise = getFastStockfishMove(fen).then(mv => mv ? { name: "Stockfish 16+", move: mv } : null).catch(() => null);
+        const stockfishOnlinePromise = getFastStockfishMove(fen).then(mv => mv ? { name: "Stockfish 16+", move: mv } : null).catch(() => null);
+        const chessApiPromise = getChessApiMove(fen).then(mv => mv ? { name: "Stockfish 16+", move: mv } : null).catch(() => null);
 
-        // Try Lichess cloud first (usually <100ms)
+        // Fast path: Lichess Cloud
         const cloudRes = await Promise.race([
             lichessPromise,
-            new Promise(r => setTimeout(() => r(null), 1200))
+            new Promise(r => setTimeout(() => r(null), 1000))
         ]);
-
         if (cloudRes && cloudRes.move) {
             BOT_S.engineName = cloudRes.name;
             return cloudRes.move;
         }
 
-        // Await either Stockfish 16+ or Lichess
-        const [lRes, sfRes] = await Promise.all([lichessPromise, stockfishPromise]);
-        if (sfRes && sfRes.move) {
-            BOT_S.engineName = sfRes.name;
-            return sfRes.move;
+        // Parallel Stockfish 16+ Engines
+        const fastSf = await Promise.race([stockfishOnlinePromise, chessApiPromise]);
+        if (fastSf && fastSf.move) {
+            BOT_S.engineName = fastSf.name;
+            return fastSf.move;
         }
-        if (lRes && lRes.move) {
-            BOT_S.engineName = lRes.name;
-            return lRes.move;
+
+        const [sf1, sf2, lcs] = await Promise.all([stockfishOnlinePromise, chessApiPromise, lichessPromise]);
+        const bestOnline = sf1 || sf2 || lcs;
+        if (bestOnline && bestOnline.move) {
+            BOT_S.engineName = bestOnline.name;
+            return bestOnline.move;
         }
 
         // 3. Fallback: Local Minimax Engine (only if offline)
