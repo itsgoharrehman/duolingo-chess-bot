@@ -1053,6 +1053,9 @@ async function executeMove(uci, insetRatio, flipped) {
 //  PAWN PROMOTION
 // ══════════════════════════════════════════════════════════════════════════════
 
+let _pendingPromotionSq = null;
+let _pendingPromotionTime = 0;
+
 function isPawnPromotion(fen, uci) {
     if (!uci || uci.length < 4) return false;
     if (uci.length >= 5) return true;
@@ -1062,52 +1065,35 @@ function isPawnPromotion(fen, uci) {
         const sqIdx = game._sqToIdx(from);
         const piece = game.board[sqIdx];
         if (piece) {
-            return piece.type === "p" && ((from[1] === "7" && to[1] === "8") || (from[1] === "2" && to[1] === "1"));
+            return (piece.type === "p" || piece.type === "P") && (to[1] === "8" || to[1] === "1");
         }
     } catch (_) {}
-    return (from[1] === "7" && to[1] === "8") || (from[1] === "2" && to[1] === "1");
+    return (to[1] === "8" && (from[1] === "7" || from[1] === "8")) || (to[1] === "1" && (from[1] === "2" || from[1] === "1"));
 }
 
 function autoClickPromotion() {
     let clicked = false;
 
-    // 1. Find the "PAWN PROMOTION" popup container on screen
+    // 1. Find any promotion popup container by text/class/attribute
     try {
-        const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-        let n;
-        while (n = walk.nextNode()) {
-            const txt = (n.nodeValue || "").trim().toUpperCase();
-            if (txt.includes("PROMOTION")) {
-                let parent = n.parentElement;
-                for (let level = 0; level < 5; level++) {
-                    if (!parent || parent === document.body) break;
-                    if (parent.closest("#dc-pill")) break;
-
-                    const items = Array.from(parent.querySelectorAll('svg, button, img, [role="button"], div[tabindex], div[class*="piece" i]'))
-                        .filter(el => {
-                            if (el.closest("#dc-pill")) return false;
-                            const r = el.getBoundingClientRect();
-                            return r.width >= 16 && r.height >= 16 && r.width <= 140 && r.height <= 140;
-                        });
-
-                    if (items.length > 0) {
-                        // Sort horizontally: Queen is ALWAYS the 1st / leftmost piece in Duolingo
-                        items.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-                        const queen = items[0];
-                        const qr = queen.getBoundingClientRect();
-                        const qx = qr.left + qr.width / 2;
-                        const qy = qr.top + qr.height / 2;
-
-                        dispatchTap(queen, qx, qy, 35);
-                        simulateFullClick(queen);
-                        if (queen.parentElement) {
-                            simulateFullClick(queen.parentElement);
-                        }
-                        clicked = true;
-                        return true;
-                    }
-                    parent = parent.parentElement;
-                }
+        const promoContainers = Array.from(document.querySelectorAll(
+            '[data-test*="promotion" i], [class*="promotion" i], [id*="promotion" i], div[role="dialog"], [aria-label*="promotion" i]'
+        ));
+        for (const container of promoContainers) {
+            if (container.closest("#dc-pill")) continue;
+            const items = Array.from(container.querySelectorAll('button, [role="button"], img, svg, div[tabindex], div[class*="piece" i]'))
+                .filter(el => {
+                    if (el.closest("#dc-pill")) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width >= 16 && r.height >= 16 && r.width <= 160 && r.height <= 160;
+                });
+            if (items.length > 0) {
+                items.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+                const queen = items[0];
+                const qr = queen.getBoundingClientRect();
+                dispatchTap(queen, qr.left + qr.width / 2, qr.top + qr.height / 2, 35);
+                simulateFullClick(queen);
+                return true;
             }
         }
     } catch (_) {}
@@ -1117,7 +1103,8 @@ function autoClickPromotion() {
         `[data-piece="queen"]`, `[data-piece="q"]`, `[data-piece="Q"]`,
         `[data-test*="queen" i]`, `[data-test*="player-piece-queen" i]`, `[data-test*="promotion-queen" i]`,
         `button[aria-label*="queen" i]`, `div[role="button"][aria-label*="queen" i]`,
-        `img[alt*="queen" i]`, `img[src*="queen" i]`, `svg[data-piece*="queen" i]`
+        `img[alt*="queen" i]`, `img[src*="queen" i]`, `svg[data-piece*="queen" i]`,
+        `[aria-label*="hậu" i]`, `[aria-label*="dame" i]`, `[aria-label*="reina" i]`
     ];
 
     for (const sel of queenSelectors) {
@@ -1136,11 +1123,11 @@ function autoClickPromotion() {
         const canvas = findCanvas();
         if (canvas) {
             const cr = canvas.getBoundingClientRect();
-            const svgs = Array.from(document.querySelectorAll("svg"))
+            const svgs = Array.from(document.querySelectorAll("svg, img"))
                 .filter(s => {
                     if (s.closest("#dc-pill")) return false;
                     const r = s.getBoundingClientRect();
-                    return r.left >= cr.left && r.right <= cr.right && r.top >= cr.top && r.bottom <= cr.bottom && r.width >= 18 && r.height >= 18;
+                    return r.left >= cr.left && r.right <= cr.right && r.top >= cr.top && r.bottom <= cr.bottom && r.width >= 18 && r.height >= 18 && r.width <= 140;
                 });
             if (svgs.length >= 4) {
                 svgs.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
@@ -1151,26 +1138,53 @@ function autoClickPromotion() {
         }
     } catch (_) {}
 
-    // 4. Global keyboard promotion triggers
-    try {
-        for (const key of ["q", "Q", "1"]) {
-            const evOpts = { key, code: `Key${key.toUpperCase()}`, keyCode: key.toUpperCase().charCodeAt(0), bubbles: true, cancelable: true, composed: true };
-            window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
-            document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
-        }
-    } catch (_) {}
-
     return clicked;
 }
 
 async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
+    if (!destSq) return false;
+    _pendingPromotionSq = destSq;
+    _pendingPromotionTime = Date.now();
+
+    // 1. Allow Duolingo canvas & DOM modal to mount and render piece options
+    await sleep(IS_MOBILE ? 220 : 160);
+
+    const canvas = findCanvas();
+
     for (let attempt = 0; attempt < 10; attempt++) {
-        await sleep(50);
-        if (autoClickPromotion()) return true;
-        if (destSq) {
-            await clickSquare(destSq, insetRatio, flipped, 30);
+        // A. Check DOM promotion popup
+        if (autoClickPromotion()) {
+            _pendingPromotionSq = null;
+            return true;
         }
+
+        // B. Canvas piece selection: Tap destination square (Queen position on Canvas)
+        if (canvas) {
+            // Send Queen keyboard triggers (Duolingo canvas listens to keydown 'q' / '1')
+            try {
+                for (const key of ["q", "Q", "1", "Enter"]) {
+                    const evOpts = { key, code: `Key${key.toUpperCase()}`, keyCode: key.toUpperCase().charCodeAt(0), bubbles: true, cancelable: true, composed: true };
+                    window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+                    document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+                    window.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+                    document.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+                }
+            } catch (_) {}
+
+            // Primary tap at destination square (where Queen is drawn)
+            const p = getSquareCoords(canvas, destSq, insetRatio, flipped);
+            await dispatchTap(canvas, p.x, p.y, 40);
+
+            // Alternate tap in case board flip state differs
+            const pAlt = getSquareCoords(canvas, destSq, insetRatio, !flipped);
+            if (Math.abs(pAlt.y - p.y) > 20) {
+                await dispatchTap(canvas, pAlt.x, pAlt.y, 30);
+            }
+        }
+
+        await sleep(IS_MOBILE ? 110 : 75);
     }
+
     return true;
 }
 
@@ -1566,7 +1580,12 @@ async function solveChallenge(ch) {
         renderPanel();
         if (step.kind === "player") {
             if (!validUCI(step.move)) continue;
+            const isPromotion = step.move.length >= 5 || (step.move[1] === "7" && step.move[3] === "8") || (step.move[1] === "2" && step.move[3] === "1");
             await executeMove(step.move, SOL_CFG.boardInsetRatio, flip);
+            if (isPromotion) {
+                const promoChar = step.move[4] || "q";
+                await handlePromotion(step.move.slice(2, 4), promoChar, SOL_CFG.boardInsetRatio, flip);
+            }
             await sleep(SOL_CFG.moveDelay);
         } else {
             const h1 = canvasHash();
@@ -2082,6 +2101,16 @@ async function _autoPollLoop() {
                 autoMatchOscar();
             } else if (BOT_CFG.autoPlay) {
                 advanceFlow();
+            }
+        }
+
+        // If promotion is pending and waiting on piece choice, re-trigger promotion tap
+        if (_pendingPromotionSq && (Date.now() - _pendingPromotionTime < 3500)) {
+            const canvas = findCanvas();
+            if (canvas) {
+                const flip = BOT_CFG.flipped || (BOT_S.playerColor || "").toLowerCase() === "black";
+                const p = getSquareCoords(canvas, _pendingPromotionSq, BOT_CFG.boardInsetRatio, flip);
+                dispatchTap(canvas, p.x, p.y, 35);
             }
         }
 
