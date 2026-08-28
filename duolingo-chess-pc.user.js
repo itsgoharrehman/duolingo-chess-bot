@@ -38,6 +38,7 @@ const BOT_CFG = {
     boardInsetRatio: 64 / 648,
     flipped:         false,
     autoPlay:        true,
+    autoMatch:       true,
     postMoves:       false,
 };
 
@@ -59,6 +60,7 @@ function loadSettings() {
         if (saved.bot) Object.assign(BOT_CFG, saved.bot);
         if (saved.solver) Object.assign(SOL_CFG, saved.solver);
         if (typeof saved.matchesWon === "number") BOT_S.matchesWon = saved.matchesWon;
+        if (typeof saved.movesPlayed === "number") BOT_S.movesPlayed = saved.movesPlayed;
     } catch (_) {}
 }
 
@@ -67,7 +69,8 @@ function saveSettings() {
         localStorage.setItem(STORE_KEY, JSON.stringify({
             bot: BOT_CFG,
             solver: SOL_CFG,
-            matchesWon: BOT_S.matchesWon
+            matchesWon: BOT_S.matchesWon,
+            movesPlayed: BOT_S.movesPlayed
         }));
     } catch (_) {}
 }
@@ -85,6 +88,7 @@ const fenSide  = fen => (fen?.split(" ")?.[1] ?? "w").toLowerCase();
 
 let _lastStateChange = Date.now();
 let _lastMoveAttemptTime = 0;
+const _finishedMatchIds = new Set();
 
 const BOT_S = {
     matchId: null,
@@ -100,6 +104,13 @@ const BOT_S = {
     matchesWon: 0,
     movesPlayed: 0,
 };
+
+function resetStats() {
+    BOT_S.matchesWon = 0;
+    BOT_S.movesPlayed = 0;
+    saveSettings();
+    renderPanel();
+}
 
 function setStatus(newStatus) {
     if (BOT_S.status !== newStatus) {
@@ -1183,9 +1194,16 @@ function isForbiddenButton(el) {
     return test === "quit-button" || test === "close-button" || aria === "quit" || aria === "close" || aria === "leave";
 }
 
+let _lastClickTime = 0;
+
 function simulateFullClick(el) {
     if (!el || isForbiddenButton(el)) return false;
+    const now = Date.now();
+    if (now - _lastClickTime < 180) return false;
+    _lastClickTime = now;
+
     try {
+        if (typeof el.focus === "function") el.focus();
         if (typeof el.click === "function") el.click();
 
         const rKey = Object.keys(el).find(k => k.startsWith("__reactProps$") || k.startsWith("__reactEventHandlers$") || k.startsWith("__reactFiber$"));
@@ -1197,17 +1215,23 @@ function simulateFullClick(el) {
         }
 
         const r = el.getBoundingClientRect();
-        const x = r.left + r.width / 2;
-        const y = r.top + r.height / 2;
-
-        dispatchTap(el, x, y, 15);
+        if (r.width > 0 && r.height > 0) {
+            const x = r.left + r.width / 2;
+            const y = r.top + r.height / 2;
+            dispatchTap(el, x, y, 15);
+        }
         return true;
     } catch (_) {
         return false;
     }
 }
 
+let _lastAdvanceKeyTime = 0;
 function pressGlobalAdvanceKeys() {
+    const now = Date.now();
+    if (now - _lastAdvanceKeyTime < 450) return;
+    _lastAdvanceKeyTime = now;
+
     try {
         for (const key of ["Enter", " "]) {
             const code = key === " " ? "Space" : "Enter";
@@ -1221,11 +1245,115 @@ function pressGlobalAdvanceKeys() {
     } catch (_) {}
 }
 
+function autoMatchOscar() {
+    if (!BOT_CFG.autoMatch) return false;
+
+    // 1. Pawn promotion handling
+    if (autoClickPromotion()) return true;
+
+    // 2. Direct Rematch / Play Again on Game-Over / Victory Screen
+    const rematchSelectors = [
+        'button[data-test*="rematch" i]', 'button[data-test*="play-again" i]',
+        'button[data-test*="new-game" i]', 'a[data-test*="rematch" i]',
+        '[role="button"][data-test*="rematch" i]'
+    ];
+    for (const sel of rematchSelectors) {
+        const btn = document.querySelector(sel);
+        if (btn && isElementVisible(btn) && !isForbiddenButton(btn)) {
+            setStatus("matching");
+            simulateFullClick(btn);
+            return true;
+        }
+    }
+
+    // 3. Clear Post-Match Summary / Reward screens ("Continue", "Claim XP", "Done", "Next")
+    const advanceSelectors = [
+        '[data-test*="player-next" i]', '[data-test*="continue-button" i]',
+        '[data-test*="claim-button" i]', '[data-test*="session-end-button" i]',
+        '[data-test*="next-button" i]', '[data-test*="bottom-nav-next-button" i]',
+        '[data-test*="challenge-next" i]', '[data-test*="player-practice-button" i]'
+    ];
+    for (const sel of advanceSelectors) {
+        const btn = document.querySelector(sel);
+        if (btn && isElementVisible(btn) && !isForbiddenButton(btn)) {
+            simulateFullClick(btn);
+            return true;
+        }
+    }
+
+    // 4. Oscar Modal / Drawer Launch CTA ("Start Match", "Play", "Play Oscar", "Start Game")
+    const launchSelectors = [
+        'button[data-test*="start-match" i]', 'button[data-test*="start-button" i]',
+        'button[data-test*="play-button" i]', 'button[data-test*="player-start-button" i]',
+        'button[data-test*="challenge-button" i]', 'button[data-test*="bot-play" i]'
+    ];
+    for (const sel of launchSelectors) {
+        const btn = document.querySelector(sel);
+        if (btn && isElementVisible(btn) && !isForbiddenButton(btn)) {
+            setStatus("matching");
+            simulateFullClick(btn);
+            return true;
+        }
+    }
+
+    // 5. Target Oscar Bot Tile / Card on Chess / Bots Screen
+    const oscarCardSelectors = [
+        '[data-test*="bot-oscar" i]', '[data-test*="character-oscar" i]',
+        '[data-test*="oscar-bot" i]', '[data-test*="character-card-oscar" i]',
+        '[aria-label*="oscar" i]'
+    ];
+    for (const sel of oscarCardSelectors) {
+        const card = document.querySelector(sel);
+        if (card && isElementVisible(card) && !isForbiddenButton(card)) {
+            setStatus("matching");
+            simulateFullClick(card);
+            return true;
+        }
+    }
+
+    // 6. Universal Semantic Keyword Match for Oscar, Rematch, and Advance CTAs
+    const candidates = Array.from(document.querySelectorAll(
+        'button, [role="button"], a, div[data-test], div[class*="card" i], div[class*="bot" i], div[class*="character" i], li'
+    ));
+
+    const oscarKws = ["play against oscar", "play oscar", "oscar", "start match", "start game", "play match", "play now", "play again", "rematch", "play", "start"];
+    const flowKws = ["continue", "tiếp tục", "tiep tuc", "next", "claim", "claim reward", "claim xp", "claim prize", "done", "check", "got it", "finish", "ready"];
+
+    for (const raw of candidates) {
+        const el = raw.closest("button, [role='button'], a, div[data-test]") || raw;
+        if (!isElementVisible(el) || isForbiddenButton(el)) continue;
+
+        const dataTest = (el.getAttribute("data-test") || "").toLowerCase();
+        const ariaLabel = (el.getAttribute("aria-label") || "").toLowerCase();
+        const txt = (el.innerText || el.textContent || "").trim().toLowerCase();
+
+        // Check Oscar / Rematch CTAs
+        for (const kw of oscarKws) {
+            if (txt === kw || (kw === "oscar" && /\boscar\b/i.test(txt)) || ariaLabel.includes(kw) || dataTest.includes(kw.replace(/\s+/g, "-"))) {
+                setStatus("matching");
+                simulateFullClick(el);
+                return true;
+            }
+        }
+
+        // Check End Flow CTAs
+        for (const kw of flowKws) {
+            if (txt === kw || txt.includes(kw) || ariaLabel.includes(kw) || dataTest.includes(kw.replace(/\s+/g, "-"))) {
+                simulateFullClick(el);
+                return true;
+            }
+        }
+    }
+
+    // 7. Fallback to global space/enter key if end-screen banner is active
+    pressGlobalAdvanceKeys();
+    return false;
+}
+
 function advanceFlow() {
-    if (!BOT_CFG.autoPlay) return false;
+    if (!BOT_CFG.autoPlay && !BOT_CFG.autoMatch) return false;
 
     if (autoClickPromotion()) return true;
-    pressGlobalAdvanceKeys();
 
     const candidates = Array.from(document.querySelectorAll(
         'button, [role="button"], a, div[data-test*="button" i], div[data-test*="next" i], div[data-test*="continue" i], div[data-test*="start" i], div[data-test*="play" i]'
@@ -1233,7 +1361,6 @@ function advanceFlow() {
 
     const keywords = [
         "continue", "tiếp tục", "tiep tuc", "next", "claim", "claim reward", "claim xp", "claim prize",
-        "play against oscar", "play oscar", "start match", "start game", "play match", "play now",
         "play again", "rematch", "start lesson", "start session", "start", "play", "let's go", "done",
         "check", "got it", "finish", "practice", "ready", "keep going", "continue learning"
     ];
@@ -1263,6 +1390,7 @@ function advanceFlow() {
             }
         }
     }
+    pressGlobalAdvanceKeys();
     return false;
 }
 
@@ -1307,13 +1435,22 @@ function onMatchData(data) {
     if (Array.isArray(match.moveHistory)) BOT_S.moveHistory = [...match.moveHistory];
 
     if (match.endCondition || match.status === "finished") {
+        if (match.id) _finishedMatchIds.add(String(match.id));
+        if (BOT_S.matchId) _finishedMatchIds.add(String(BOT_S.matchId));
         BOT_S.matchId = null;
         BOT_S.matchesWon++;
         saveSettings();
         setStatus("idle");
-        advanceFlow();
-        setTimeout(advanceFlow, 300);
-        setTimeout(advanceFlow, 700);
+        if (BOT_CFG.autoMatch) {
+            autoMatchOscar();
+            setTimeout(autoMatchOscar, 250);
+            setTimeout(autoMatchOscar, 650);
+            setTimeout(autoMatchOscar, 1200);
+        } else {
+            advanceFlow();
+            setTimeout(advanceFlow, 300);
+            setTimeout(advanceFlow, 700);
+        }
         return;
     }
 
@@ -1618,14 +1755,18 @@ async function recoverState() {
         for (const e of entries) {
             const matchHit = e.name.match(/\/chess\/\d+\/(\d+)\/matches\/([^/?#]+)/);
             if (matchHit && matchHit[2] && !e.name.includes('/moves')) {
+                const mId = matchHit[2];
+                if (_finishedMatchIds.has(String(mId))) continue;
                 BOT_S.userId = matchHit[1];
-                BOT_S.matchId = matchHit[2];
+                BOT_S.matchId = mId;
                 await _fetchMatchState();
                 return;
             }
             const matchHit2 = e.name.match(/\/matches\/([^/?#]+)/);
             if (matchHit2 && matchHit2[1] && !e.name.includes('/moves')) {
-                BOT_S.matchId = matchHit2[1];
+                const mId = matchHit2[1];
+                if (_finishedMatchIds.has(String(mId))) continue;
+                BOT_S.matchId = mId;
                 await _fetchMatchState();
                 return;
             }
@@ -1652,13 +1793,13 @@ const STYLE = `
 #dc-pill{
     position:fixed;bottom:18px;right:18px;
     background:rgba(15,23,42,0.96);border:1px solid rgba(148,163,184,0.25);
-    border-radius:10px;padding:8px 12px;
+    border-radius:10px;padding:9px 12px;
     font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace, sans-serif;
     color:#f8fafc;z-index:2147483647;user-select:none;
     box-shadow:0 6px 22px rgba(0,0,0,0.6);
     display:flex;flex-direction:column;gap:6px;
-    min-width:185px;max-width:235px;cursor:grab;touch-action:none;
-    font-size:11px;
+    min-width:215px;max-width:260px;cursor:grab;touch-action:none;
+    font-size:11px;box-sizing:border-box;
 }
 #dc-pill.dragging{cursor:grabbing;opacity:0.92;}
 .dc-row{display:flex;align-items:center;justify-content:space-between;gap:8px;}
@@ -1669,23 +1810,41 @@ const STYLE = `
 }
 .dc-status.active{background:#16a34a;color:#fff;}
 .dc-status.thinking{background:#d97706;color:#fff;}
+.dc-status.matching{background:#2563eb;color:#fff;}
 .dc-info{
-    font-size:10px;color:#94a3b8;border-top:1px solid #1e293b;padding-top:4px;
+    font-size:10px;color:#94a3b8;border-top:1px solid #1e293b;padding-top:5px;
     display:flex;align-items:center;justify-content:space-between;gap:6px;
 }
 .dc-engine{color:#38bdf8;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px;}
 .dc-move{color:#facc15;font-family:monospace;font-weight:800;font-size:10px;}
-.dc-actions{border-top:1px solid #1e293b;padding-top:4px;display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.dc-btn-grid{
+    display:grid;grid-template-columns:1fr 1fr;gap:6px;
+    border-top:1px solid #1e293b;padding-top:5px;
+}
 .dc-btn{
     background:#58cc02;color:#000;border:none;border-radius:5px;
-    padding:4px 8px;font-size:10px;font-weight:800;cursor:pointer;
-    line-height:1.2;
+    padding:5px 6px;font-size:9.5px;font-weight:800;cursor:pointer;
+    line-height:1.2;text-align:center;transition:background 0.15s ease;
+    white-space:nowrap;user-select:none;
 }
 .dc-btn.off{background:#334155;color:#94a3b8;}
-.dc-stats{display:flex;align-items:center;gap:10px;font-size:10px;font-weight:700;}
+.dc-btn:hover{filter:brightness(1.08);}
+.dc-btn:active{filter:brightness(0.92);}
+.dc-footer{
+    border-top:1px solid #1e293b;padding-top:5px;
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
+}
+.dc-stats{display:flex;align-items:center;gap:8px;font-size:10px;font-weight:700;}
 .dc-stat{color:#64748b;}
 .dc-w-num{color:#58cc02;font-weight:800;font-size:11px;}
 .dc-m-num{color:#38bdf8;font-weight:800;font-size:11px;}
+.dc-btn-rst{
+    background:#1e293b;color:#94a3b8;border:1px solid rgba(148,163,184,0.2);
+    border-radius:4px;padding:2px 6px;font-size:9px;font-weight:700;
+    cursor:pointer;line-height:1.2;text-transform:uppercase;transition:all 0.15s ease;
+}
+.dc-btn-rst:hover{background:#334155;color:#f8fafc;border-color:rgba(148,163,184,0.4);}
+.dc-btn-rst:active{background:#475569;}
 `;
 
 function injectCSS() {
@@ -1712,26 +1871,53 @@ function createPanel() {
         <span class="dc-engine" id="dc-eng">${esc(BOT_S.engineName || "Stockfish 16+")}</span>
         <span class="dc-move" id="dc-mv">${esc(BOT_S.lastMove || "-")}</span>
     </div>
-    <div class="dc-actions">
-        <button id="dc-tg" class="dc-btn ${BOT_CFG.autoPlay ? '' : 'off'}">${BOT_CFG.autoPlay ? 'AUTO: ON' : 'AUTO: OFF'}</button>
+    <div class="dc-btn-grid">
+        <button id="dc-tg-play" class="dc-btn ${BOT_CFG.autoPlay ? '' : 'off'}">${BOT_CFG.autoPlay ? 'AUTO PLAY: ON' : 'AUTO PLAY: OFF'}</button>
+        <button id="dc-tg-match" class="dc-btn ${BOT_CFG.autoMatch ? '' : 'off'}">${BOT_CFG.autoMatch ? 'AUTO MATCH: ON' : 'AUTO MATCH: OFF'}</button>
+    </div>
+    <div class="dc-footer">
         <div class="dc-stats">
             <span class="dc-stat">WINS: <b id="dc-w" class="dc-w-num">${BOT_S.matchesWon}</b></span>
             <span class="dc-stat">MOVES: <b id="dc-m" class="dc-m-num">${BOT_S.movesPlayed}</b></span>
         </div>
+        <button id="dc-rst" class="dc-btn-rst" title="Reset match stats">RESET</button>
     </div>`;
 
     document.body.appendChild(_panel);
 
-    const tg = _panel.querySelector("#dc-tg");
-    tg.addEventListener("pointerdown", (e) => e.stopPropagation());
-    tg.addEventListener("touchstart", (e) => e.stopPropagation());
-    tg.addEventListener("click", (e) => {
-        e.stopPropagation();
-        BOT_CFG.autoPlay = !BOT_CFG.autoPlay;
-        saveSettings();
-        tg.classList.toggle("off", !BOT_CFG.autoPlay);
-        tg.textContent = BOT_CFG.autoPlay ? 'AUTO: ON' : 'AUTO: OFF';
-    });
+    const tgPlay = _panel.querySelector("#dc-tg-play");
+    if (tgPlay) {
+        tgPlay.addEventListener("pointerdown", (e) => e.stopPropagation());
+        tgPlay.addEventListener("touchstart", (e) => e.stopPropagation());
+        tgPlay.addEventListener("click", (e) => {
+            e.stopPropagation();
+            BOT_CFG.autoPlay = !BOT_CFG.autoPlay;
+            saveSettings();
+            renderPanel();
+        });
+    }
+
+    const tgMatch = _panel.querySelector("#dc-tg-match");
+    if (tgMatch) {
+        tgMatch.addEventListener("pointerdown", (e) => e.stopPropagation());
+        tgMatch.addEventListener("touchstart", (e) => e.stopPropagation());
+        tgMatch.addEventListener("click", (e) => {
+            e.stopPropagation();
+            BOT_CFG.autoMatch = !BOT_CFG.autoMatch;
+            saveSettings();
+            renderPanel();
+        });
+    }
+
+    const rst = _panel.querySelector("#dc-rst");
+    if (rst) {
+        rst.addEventListener("pointerdown", (e) => e.stopPropagation());
+        rst.addEventListener("touchstart", (e) => e.stopPropagation());
+        rst.addEventListener("click", (e) => {
+            e.stopPropagation();
+            resetStats();
+        });
+    }
 
     makeDraggable(_panel);
     renderPanel();
@@ -1832,20 +2018,26 @@ function renderPanel() {
     const mv = _panel.querySelector("#dc-mv");
     const w  = _panel.querySelector("#dc-w");
     const m  = _panel.querySelector("#dc-m");
-    const tg = _panel.querySelector("#dc-tg");
+    const tgPlay = _panel.querySelector("#dc-tg-play");
+    const tgMatch = _panel.querySelector("#dc-tg-match");
 
     if (st) {
         st.textContent = BOT_S.status.toUpperCase();
         const isAct = BOT_S.status === "playing" || BOT_S.status === "our_turn";
-        st.className = `dc-status ${isAct ? 'active' : BOT_S.status === 'thinking' ? 'thinking' : ''}`;
+        const isMatch = BOT_S.status === "matching";
+        st.className = `dc-status ${isAct ? 'active' : BOT_S.status === 'thinking' ? 'thinking' : isMatch ? 'matching' : ''}`;
     }
     if (eng) eng.textContent = BOT_S.engineName || "Stockfish 16+";
     if (mv) mv.textContent = BOT_S.lastMove || "-";
     if (w) w.textContent = BOT_S.matchesWon;
     if (m) m.textContent = BOT_S.movesPlayed;
-    if (tg) {
-        tg.textContent = BOT_CFG.autoPlay ? "AUTO: ON" : "AUTO: OFF";
-        tg.className = `dc-btn ${BOT_CFG.autoPlay ? '' : 'off'}`;
+    if (tgPlay) {
+        tgPlay.textContent = BOT_CFG.autoPlay ? "AUTO PLAY: ON" : "AUTO PLAY: OFF";
+        tgPlay.className = `dc-btn ${BOT_CFG.autoPlay ? '' : 'off'}`;
+    }
+    if (tgMatch) {
+        tgMatch.textContent = BOT_CFG.autoMatch ? "AUTO MATCH: ON" : "AUTO MATCH: OFF";
+        tgMatch.className = `dc-btn ${BOT_CFG.autoMatch ? '' : 'off'}`;
     }
 }
 
@@ -1880,13 +2072,17 @@ async function _autoPollLoop() {
             }
         }
 
-        if (!BOT_CFG.autoPlay) continue;
+        if (!BOT_CFG.autoPlay && !BOT_CFG.autoMatch) continue;
 
-        // Auto promote & advance flow
+        // Auto promote & advance flow / auto match
         autoClickPromotion();
 
         if (BOT_S.status !== "playing" && BOT_S.status !== "thinking" && !BOT_S.turnInProgress) {
-            advanceFlow();
+            if (BOT_CFG.autoMatch) {
+                autoMatchOscar();
+            } else if (BOT_CFG.autoPlay) {
+                advanceFlow();
+            }
         }
 
         const canvas = findCanvas();
@@ -1901,8 +2097,8 @@ async function _autoPollLoop() {
                 }
             } else if (SOL_STATE.challenges.length && !SOL_STATE.solving) {
                 solveAll();
-            } else if (isOurTurn(BOT_S.currentFen) && (BOT_S.status === "idle" || BOT_S.status === "waiting")) {
-                if (!BOT_S.turnInProgress && (Date.now() - _lastMoveAttemptTime > 1500)) {
+            } else if (BOT_CFG.autoPlay && isOurTurn(BOT_S.currentFen) && (BOT_S.status === "idle" || BOT_S.status === "waiting")) {
+                if (!BOT_S.turnInProgress && (Date.now() - _lastMoveAttemptTime > 1200)) {
                     setStatus("our_turn");
                     takeTurn();
                 }
