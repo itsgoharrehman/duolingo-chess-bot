@@ -1071,6 +1071,48 @@ function isPawnPromotion(fen, uci) {
     return (to[1] === "8" && (from[1] === "7" || from[1] === "8")) || (to[1] === "1" && (from[1] === "2" || from[1] === "1"));
 }
 
+async function tapCanvasAt(canvas, x, y, pressMs = 35) {
+    if (!canvas) return;
+    await dispatchTap(canvas, x, y, pressMs);
+    try {
+        const topEl = document.elementFromPoint(x, y);
+        if (topEl && topEl !== canvas && !topEl.closest("#dc-pill")) {
+            await dispatchTap(topEl, x, y, pressMs);
+            simulateFullClick(topEl);
+        }
+    } catch (_) {}
+}
+
+function getPromotionQueenCoords(canvas, destSq, insetRatio, flipped) {
+    const r = canvas.getBoundingClientRect();
+    const iw = r.width * (insetRatio ?? 64 / 648);
+    const ih = r.height * (insetRatio ?? 64 / 648);
+    const bw = r.width - (iw * 2);
+    const bh = r.height - (ih * 2);
+
+    const coords = [];
+
+    // 1. Exact Queen icon in Duolingo "PAWN PROMOTION" canvas modal (File c, Row 3.0)
+    coords.push({ x: r.left + iw + 2.5 * (bw / 8), y: r.top + ih + 3.0 * (bh / 8) });
+    coords.push({ x: r.left + iw + 2.4 * (bw / 8), y: r.top + ih + 2.9 * (bh / 8) });
+    coords.push({ x: r.left + iw + 2.6 * (bw / 8), y: r.top + ih + 3.1 * (bh / 8) });
+
+    // 2. Alternate vertical alignments (Row 4.0 center, Row 5.0 lower)
+    coords.push({ x: r.left + iw + 2.5 * (bw / 8), y: r.top + ih + 4.0 * (bh / 8) });
+    coords.push({ x: r.left + iw + 2.5 * (bw / 8), y: r.top + ih + 5.0 * (bh / 8) });
+
+    // 3. Alternate horizontal alignment if modal is mirrored (File f, Column 5.5)
+    coords.push({ x: r.left + iw + 5.5 * (bw / 8), y: r.top + ih + 3.0 * (bh / 8) });
+
+    // 4. Destination square itself
+    if (destSq && destSq.length >= 2) {
+        coords.push(getSquareCoords(canvas, destSq, insetRatio, flipped));
+        coords.push(getSquareCoords(canvas, destSq, insetRatio, !flipped));
+    }
+
+    return coords;
+}
+
 function autoClickPromotion() {
     let clicked = false;
 
@@ -1142,45 +1184,39 @@ function autoClickPromotion() {
 }
 
 async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
-    if (!destSq) return false;
-    _pendingPromotionSq = destSq;
+    _pendingPromotionSq = destSq || "q";
     _pendingPromotionTime = Date.now();
 
-    // 1. Allow Duolingo canvas & DOM modal to mount and render piece options
-    await sleep(IS_MOBILE ? 220 : 160);
+    // 1. Allow Duolingo canvas promotion modal to mount and render piece options
+    await sleep(IS_MOBILE ? 240 : 180);
 
     const canvas = findCanvas();
+    if (!canvas) return false;
 
-    for (let attempt = 0; attempt < 10; attempt++) {
-        // A. Check DOM promotion popup
+    const coords = getPromotionQueenCoords(canvas, destSq, insetRatio, flipped);
+
+    for (let attempt = 0; attempt < 12; attempt++) {
+        // A. Check DOM promotion popup (if any)
         if (autoClickPromotion()) {
             _pendingPromotionSq = null;
             return true;
         }
 
-        // B. Canvas piece selection: Tap destination square (Queen position on Canvas)
-        if (canvas) {
-            // Send Queen keyboard triggers (Duolingo canvas listens to keydown 'q' / '1')
-            try {
-                for (const key of ["q", "Q", "1", "Enter"]) {
-                    const evOpts = { key, code: `Key${key.toUpperCase()}`, keyCode: key.toUpperCase().charCodeAt(0), bubbles: true, cancelable: true, composed: true };
-                    window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
-                    document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
-                    window.dispatchEvent(new KeyboardEvent("keyup", evOpts));
-                    document.dispatchEvent(new KeyboardEvent("keyup", evOpts));
-                }
-            } catch (_) {}
-
-            // Primary tap at destination square (where Queen is drawn)
-            const p = getSquareCoords(canvas, destSq, insetRatio, flipped);
-            await dispatchTap(canvas, p.x, p.y, 40);
-
-            // Alternate tap in case board flip state differs
-            const pAlt = getSquareCoords(canvas, destSq, insetRatio, !flipped);
-            if (Math.abs(pAlt.y - p.y) > 20) {
-                await dispatchTap(canvas, pAlt.x, pAlt.y, 30);
-            }
+        // B. Canvas piece selection: Tap Queen modal icons on canvas
+        for (const pt of coords) {
+            await tapCanvasAt(canvas, pt.x, pt.y, 35);
         }
+
+        // C. Send Queen keyboard triggers (Duolingo canvas listens to keydown 'q' / '1')
+        try {
+            for (const key of ["q", "Q", "1", "Enter", " "]) {
+                const evOpts = { key, code: `Key${key.toUpperCase()}`, keyCode: key.toUpperCase().charCodeAt(0), bubbles: true, cancelable: true, composed: true };
+                window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+                document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+                window.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+                document.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+            }
+        } catch (_) {}
 
         await sleep(IS_MOBILE ? 110 : 75);
     }
@@ -2104,13 +2140,23 @@ async function _autoPollLoop() {
             }
         }
 
-        // If promotion is pending and waiting on piece choice, re-trigger promotion tap
-        if (_pendingPromotionSq && (Date.now() - _pendingPromotionTime < 3500)) {
+        // Watchdog: If promotion is pending or last move was promotion, tap Queen canvas modal coordinates
+        const isPromoMove = BOT_S.lastMove && (BOT_S.lastMove.length >= 5 || BOT_S.lastMove.endsWith("q") || BOT_S.lastMove.endsWith("Q"));
+        if ((_pendingPromotionSq || isPromoMove) && BOT_S.status !== "playing" && BOT_S.status !== "thinking") {
             const canvas = findCanvas();
             if (canvas) {
                 const flip = BOT_CFG.flipped || (BOT_S.playerColor || "").toLowerCase() === "black";
-                const p = getSquareCoords(canvas, _pendingPromotionSq, BOT_CFG.boardInsetRatio, flip);
-                dispatchTap(canvas, p.x, p.y, 35);
+                const coords = getPromotionQueenCoords(canvas, _pendingPromotionSq || (BOT_S.lastMove ? BOT_S.lastMove.slice(2, 4) : null), BOT_CFG.boardInsetRatio, flip);
+                for (const pt of coords) {
+                    dispatchTap(canvas, pt.x, pt.y, 35);
+                }
+                try {
+                    for (const key of ["q", "Q", "1", "Enter", " "]) {
+                        const evOpts = { key, code: `Key${key.toUpperCase()}`, keyCode: key.toUpperCase().charCodeAt(0), bubbles: true, cancelable: true, composed: true };
+                        window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+                        document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+                    }
+                } catch (_) {}
             }
         }
 
