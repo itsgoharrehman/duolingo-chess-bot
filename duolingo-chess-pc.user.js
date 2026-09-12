@@ -12,6 +12,8 @@
 // @connect      *.stockfish.online
 // @connect      lichess.org
 // @connect      *.lichess.org
+// @connect      www.chessdb.cn
+// @connect      chessdb.cn
 // @license      MIT
 // ==/UserScript==
 
@@ -685,9 +687,21 @@ async function getFastStockfishMove(fen) {
     try {
         const encodedFen = encodeURIComponent(fen);
         const depth = BOT_CFG.stockfishDepth || 14;
-        const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodedFen}&depth=${depth}&mode=bestmove`, 4000);
+        const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodedFen}&depth=${depth}&mode=bestmove`, 6000);
         if (!data || !data.success || !data.bestmove) return null;
         const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
+        return validUCI(mv) ? mv : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function getChessDBMove(fen) {
+    try {
+        const encodedFen = encodeURIComponent(fen);
+        const data = await gmHttpFetch(`https://www.chessdb.cn/cdb.php?action=querybest&board=${encodedFen}&json=1`, 4000);
+        if (!data || data.status !== "ok" || !data.move) return null;
+        const mv = data.move.trim();
         return validUCI(mv) ? mv : null;
     } catch (_) {
         return null;
@@ -719,7 +733,7 @@ async function getBestMove(fen) {
             }
         }
 
-        // 3. Concurrent Stockfish 16+ & Lichess Cloud Evaluation (GM 3500+ Elo)
+        // 3. Concurrent Stockfish 16+, Lichess Cloud & ChessDB (GM 3500+ Elo)
         const stockfishPromise = getFastStockfishMove(fen).then(mv => {
             if (mv && legalUcis.includes(mv)) return { name: "Stockfish 16+", move: mv };
             throw new Error("No Stockfish move");
@@ -730,18 +744,23 @@ async function getBestMove(fen) {
             throw new Error("No Lichess move");
         });
 
+        const chessdbPromise = getChessDBMove(fen).then(mv => {
+            if (mv && legalUcis.includes(mv)) return { name: "ChessDB", move: mv };
+            throw new Error("No ChessDB move");
+        });
+
         try {
-            const winner = await Promise.any([stockfishPromise, lichessPromise]);
+            const winner = await Promise.any([stockfishPromise, lichessPromise, chessdbPromise]);
             if (winner && winner.move) {
                 BOT_S.engineName = winner.name;
                 return winner.move;
             }
         } catch (_) {}
 
-        // Fallback: Local Engine (Anti-Stalemate Grandmaster Minimax)
-        const bestMv = engine.getBestMove(3);
+        // Fallback: Local Engine (Anti-Stalemate Grandmaster Minimax depth-6)
+        const bestMv = engine.getBestMove(6);
         if (bestMv && legalUcis.includes(bestMv)) {
-            BOT_S.engineName = "Embedded GM";
+            BOT_S.engineName = "Embedded GM (d6)";
             return bestMv;
         }
 
@@ -2089,8 +2108,8 @@ async function _autoPollLoop() {
     while (true) {
         await sleep(POLL_MS);
 
-        // Watchdog 1: Clear stuck thinking/playing if hung > 8.0s (never abort legitimate deep engine searches)
-        if ((BOT_S.status === "thinking" || BOT_S.status === "playing" || BOT_S.turnInProgress) && (Date.now() - _lastStateChange > 8000)) {
+        // Watchdog 1: Clear stuck thinking/playing if hung > 14.0s (never abort legitimate deep engine searches)
+        if ((BOT_S.status === "thinking" || BOT_S.status === "playing" || BOT_S.turnInProgress) && (Date.now() - _lastStateChange > 14000)) {
             BOT_S.turnInProgress = false;
             setStatus("idle");
         }
