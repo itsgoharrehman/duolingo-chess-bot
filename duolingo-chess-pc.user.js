@@ -93,6 +93,8 @@ let _lastMoveSentTime = 0;
 let _lastAttemptedFen = null;
 let _lastAttemptCount = 0;
 let _lastFetchTime = 0;
+let _lastRecoverTime = 0;
+let _lastAutoMatchTime = 0;
 const _finishedMatchIds = new Set();
 
 const BOT_S = {
@@ -2120,13 +2122,17 @@ async function _autoPollLoop() {
 
         const canvas = findCanvas();
         if (canvas) {
+            // Throttle recoverState: only once every 5s — it makes HTTP fetch requests each call
             if (!BOT_S.matchId && !SOL_STATE.challenges.length) {
-                await recoverState();
+                if (Date.now() - _lastRecoverTime > 5000) {
+                    _lastRecoverTime = Date.now();
+                    await recoverState();
+                }
             }
 
             if (BOT_S.matchId) {
                 if (BOT_S.status === "waiting" || BOT_S.status === "idle") {
-                    if (Date.now() - _lastFetchTime > 600) {
+                    if (Date.now() - _lastFetchTime > 2000) {
                         _lastFetchTime = Date.now();
                         await _fetchMatchState();
                     }
