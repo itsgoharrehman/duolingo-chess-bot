@@ -1283,12 +1283,6 @@ function simulateFullClick(el) {
             }
         }
 
-        const r = el.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0) {
-            const x = r.left + r.width / 2;
-            const y = r.top + r.height / 2;
-            dispatchTap(el, x, y, 15);
-        }
         return true;
     } catch (_) {
         return false;
@@ -2132,10 +2126,13 @@ async function _autoPollLoop() {
         }
 
         if (BOT_S.status !== "playing" && BOT_S.status !== "thinking" && !BOT_S.turnInProgress) {
-            if (BOT_CFG.autoMatch) {
-                autoMatchOscar();
-            } else if (BOT_CFG.autoPlay) {
-                advanceFlow();
+            // Throttle auto-match/flow to at most once per 1500ms to prevent DOM spam
+            if (Date.now() - _lastMoveAttemptTime > 1500) {
+                if (BOT_CFG.autoMatch) {
+                    autoMatchOscar();
+                } else if (BOT_CFG.autoPlay) {
+                    advanceFlow();
+                }
             }
         }
 
