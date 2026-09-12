@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Duolingo Chess Solver & Auto-Match Bot (PC / Desktop Edition)
 // @namespace    duochess-pc
-// @version      6.0.0
-// @description  Master-engineered Duolingo Chess solver and auto-match loop with embedded chess.js rules engine, 100% legal moves, zero-freeze concurrency, infallible castling, multi-tier pawn promotion, and per-account consecutive win tracking.
+// @version      5.2.1
+// @description  Single universal ultra-stable Duolingo Chess bot with Stockfish 16+, Lichess Cloud Eval, embedded engine fallback, zero network hang, instant checkmate, and auto-match loop.
 // @match        https://www.duolingo.com/*
 // @match        https://*.duolingo.com/*
 // @run-at       document-start
@@ -12,8 +12,6 @@
 // @connect      *.stockfish.online
 // @connect      lichess.org
 // @connect      *.lichess.org
-// @connect      chess-api.com
-// @connect      *.chess-api.com
 // @license      MIT
 // ==/UserScript==
 
@@ -21,7 +19,7 @@
 "use strict";
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  CONFIGURATION & DEVICE DETECTION
+//  DEVICE DETECTION & CONFIGURATION
 // ══════════════════════════════════════════════════════════════════════════════
 
 const UA = navigator.userAgent || "";
@@ -29,641 +27,1641 @@ const IS_TABLET = /iPad|Tablet|(Android(?!.*Mobile))/i.test(UA);
 const IS_MOBILE = (!IS_TABLET && /Android|iPhone|iPod|Mobile/i.test(UA))
     || (typeof navigator.maxTouchPoints === "number" && navigator.maxTouchPoints > 1 && window.innerWidth < 768);
 
+const DEVICE_TYPE = "desktop";
+
 const BOT_CFG = {
-    engine:          "hybrid", // Lichess Cloud -> Stockfish 16+ -> Chess-API -> Embedded Engine
+    engine:          "hybrid", // Embedded + Stockfish Fallback
     stockfishDepth:  15,
-    clickDelay:      IS_MOBILE ? 80 : 45,
-    moveDelay:       IS_MOBILE ? 200 : 120,
-    thinkDelay:      IS_MOBILE ? 40 : 25,
+    clickDelay:      50,
+    moveDelay:       60,
+    thinkDelay:      10,
     boardInsetRatio: 64 / 648,
+    flipped:         false,
     autoPlay:        true,
     autoMatch:       true,
 };
 
-const STORE_KEY = "duochess.v6.settings";
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  EMBEDDED CHESS.JS RULES ENGINE (0x88 Representation - Pure FIDE Compliance)
-// ══════════════════════════════════════════════════════════════════════════════
-
-const { Chess } = (() => {
-    const BLACK = 'b';
-    const WHITE = 'w';
-    const PAWN = 'p';
-    const KNIGHT = 'n';
-    const BISHOP = 'b';
-    const ROOK = 'r';
-    const QUEEN = 'q';
-    const KING = 'k';
-
-    const DEFAULT_POSITION = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
-
-    const BITS = {
-        NORMAL: 1,
-        CAPTURE: 2,
-        BIG_PAWN: 4,
-        EP_CAPTURE: 8,
-        PROMOTION: 16,
-        KSIDE_CASTLE: 32,
-        QSIDE_CASTLE: 64
-    };
-
-    const RANK_1 = 7;
-    const RANK_2 = 6;
-    const RANK_7 = 1;
-    const RANK_8 = 0;
-
-    const SQUARES = {
-        a8: 0,   b8: 1,   c8: 2,   d8: 3,   e8: 4,   f8: 5,   g8: 6,   h8: 7,
-        a7: 16,  b7: 17,  c7: 18,  d7: 19,  e7: 20,  f7: 21,  g7: 22,  h7: 23,
-        a6: 32,  b6: 33,  c6: 34,  d6: 35,  e6: 36,  f6: 37,  g6: 38,  h6: 39,
-        a5: 48,  b5: 49,  c5: 50,  d5: 51,  e5: 52,  f5: 53,  g5: 54,  h5: 55,
-        a4: 64,  b4: 65,  c4: 66,  d4: 67,  e4: 68,  f4: 69,  g4: 70,  h4: 71,
-        a3: 80,  b3: 81,  c3: 82,  d3: 83,  e3: 84,  f3: 85,  g3: 86,  h3: 87,
-        a2: 96,  b2: 97,  c2: 98,  d2: 99,  e2: 100, f2: 101, g2: 102, h2: 103,
-        a1: 112, b1: 113, c1: 114, d1: 115, e1: 116, f1: 117, g1: 118, h1: 119
-    };
-
-    const ROOKS = {
-        w: [{ square: SQUARES.a1, flag: BITS.QSIDE_CASTLE }, { square: SQUARES.h1, flag: BITS.KSIDE_CASTLE }],
-        b: [{ square: SQUARES.a8, flag: BITS.QSIDE_CASTLE }, { square: SQUARES.h8, flag: BITS.KSIDE_CASTLE }]
-    };
-
-    const PIECE_OFFSETS = {
-        n: [-18, -33, -31, -14, 18, 33, 31, 14],
-        b: [-17, -15, 17, 15],
-        r: [-16, 1, 16, -1],
-        q: [-17, -16, -15, 1, 17, 16, 15, -1],
-        k: [-17, -16, -15, 1, 17, 16, 15, -1]
-    };
-
-    const PAWN_OFFSETS = {
-        b: [16, 32, 17, 15],
-        w: [-16, -32, -17, -15]
-    };
-
-    function rank(i) { return i >> 4; }
-    function file(i) { return i & 15; }
-    function algebraic(i) {
-        const f = file(i), r = rank(i);
-        return 'abcdefgh'.substring(f, f + 1) + '87654321'.substring(r, r + 1);
-    }
-    function swap_color(c) { return c === WHITE ? BLACK : WHITE; }
-    function is_digit(c) { return '0123456789'.indexOf(c) !== -1; }
-
-    class Chess {
-        constructor(fen) {
-            this._board = new Array(128);
-            this._kings = { w: SQUARES.a1, b: SQUARES.a8 };
-            this._turn = WHITE;
-            this._castling = { w: 0, b: 0 };
-            this._ep_square = -1;
-            this._half_moves = 0;
-            this._move_number = 1;
-            this._history = [];
-            this.load(fen || DEFAULT_POSITION);
-        }
-
-        clear() {
-            this._board = new Array(128);
-            this._kings = { w: -1, b: -1 };
-            this._turn = WHITE;
-            this._castling = { w: 0, b: 0 };
-            this._ep_square = -1;
-            this._half_moves = 0;
-            this._move_number = 1;
-            this._history = [];
-        }
-
-        load(fen) {
-            const tokens = fen.trim().split(/\s+/);
-            const position = tokens[0];
-            let square = 0;
-
-            this.clear();
-
-            for (let i = 0; i < position.length; i++) {
-                const piece = position.charAt(i);
-                if (piece === '/') {
-                    square += 8;
-                } else if (is_digit(piece)) {
-                    square += parseInt(piece, 10);
-                } else {
-                    const color = (piece < 'a') ? WHITE : BLACK;
-                    this._put({ type: piece.toLowerCase(), color: color }, algebraic(square));
-                    square++;
-                }
-            }
-
-            this._turn = tokens[1] || WHITE;
-
-            if (tokens[2]) {
-                if (tokens[2].indexOf('K') > -1) this._castling.w |= BITS.KSIDE_CASTLE;
-                if (tokens[2].indexOf('Q') > -1) this._castling.w |= BITS.QSIDE_CASTLE;
-                if (tokens[2].indexOf('k') > -1) this._castling.b |= BITS.KSIDE_CASTLE;
-                if (tokens[2].indexOf('q') > -1) this._castling.b |= BITS.QSIDE_CASTLE;
-            }
-
-            this._ep_square = (!tokens[3] || tokens[3] === '-') ? -1 : SQUARES[tokens[3]];
-            this._half_moves = parseInt(tokens[4], 10) || 0;
-            this._move_number = parseInt(tokens[5], 10) || 1;
-
-            return true;
-        }
-
-        fen() {
-            let empty = 0;
-            let fen = '';
-
-            for (let i = SQUARES.a8; i <= SQUARES.h1; i++) {
-                if (this._board[i] == null) {
-                    empty++;
-                } else {
-                    if (empty > 0) {
-                        fen += empty;
-                        empty = 0;
-                    }
-                    const color = this._board[i].color;
-                    const piece = this._board[i].type;
-                    fen += (color === WHITE) ? piece.toUpperCase() : piece.toLowerCase();
-                }
-
-                if ((i + 1) & 0x88) {
-                    if (empty > 0) {
-                        fen += empty;
-                    }
-                    if (i !== SQUARES.h1) {
-                        fen += '/';
-                    }
-                    empty = 0;
-                    i += 8;
-                }
-            }
-
-            let cflags = '';
-            if (this._castling[WHITE] & BITS.KSIDE_CASTLE) cflags += 'K';
-            if (this._castling[WHITE] & BITS.QSIDE_CASTLE) cflags += 'Q';
-            if (this._castling[BLACK] & BITS.KSIDE_CASTLE) cflags += 'k';
-            if (this._castling[BLACK] & BITS.QSIDE_CASTLE) cflags += 'q';
-            cflags = cflags || '-';
-
-            const epflags = (this._ep_square === -1) ? '-' : algebraic(this._ep_square);
-
-            return [fen, this._turn, cflags, epflags, this._half_moves, this._move_number].join(' ');
-        }
-
-        turn() { return this._turn; }
-
-        get(square) {
-            const sq = SQUARES[square];
-            if (sq == null) return null;
-            const piece = this._board[sq];
-            return piece ? { type: piece.type, color: piece.color } : null;
-        }
-
-        _put(piece, square) {
-            const sq = SQUARES[square];
-            if (sq == null) return false;
-            this._board[sq] = { type: piece.type, color: piece.color };
-            if (piece.type === KING) {
-                this._kings[piece.color] = sq;
-            }
-            return true;
-        }
-
-        _attacked(color, square) {
-            for (let i = SQUARES.a8; i <= SQUARES.h1; i++) {
-                if (i & 0x88) { i += 7; continue; }
-                if (this._board[i] == null || this._board[i].color !== color) continue;
-
-                const piece = this._board[i];
-                const difference = i - square;
-
-                if (piece.type === PAWN) {
-                    if (color === WHITE) {
-                        if (difference === 15 || difference === 17) return true;
-                    } else {
-                        if (difference === -15 || difference === -17) return true;
-                    }
-                    continue;
-                }
-
-                if (piece.type === KNIGHT) {
-                    const offsets = PIECE_OFFSETS.n;
-                    for (let j = 0; j < offsets.length; j++) {
-                        if (i + offsets[j] === square) return true;
-                    }
-                    continue;
-                }
-
-                if (piece.type === KING) {
-                    const offsets = PIECE_OFFSETS.k;
-                    for (let j = 0; j < offsets.length; j++) {
-                        if (i + offsets[j] === square) return true;
-                    }
-                    continue;
-                }
-
-                const offsets = PIECE_OFFSETS[piece.type];
-                for (let j = 0; j < offsets.length; j++) {
-                    const offset = offsets[j];
-                    let dest = i + offset;
-                    while (!(dest & 0x88)) {
-                        if (dest === square) return true;
-                        if (this._board[dest] != null) break;
-                        dest += offset;
-                    }
-                }
-            }
-            return false;
-        }
-
-        in_check() {
-            return this._attacked(swap_color(this._turn), this._kings[this._turn]);
-        }
-
-        _generate_moves() {
-            const moves = [];
-            const us = this._turn;
-            const them = swap_color(us);
-            const second_rank = { b: RANK_7, w: RANK_2 };
-
-            const add_move = (from, to, flags, promotion) => {
-                moves.push({
-                    color: us,
-                    from: from,
-                    to: to,
-                    flags: flags,
-                    piece: this._board[from].type,
-                    captured: this._board[to] ? this._board[to].type : (flags & BITS.EP_CAPTURE ? PAWN : null),
-                    promotion: promotion
-                });
-            };
-
-            for (let i = SQUARES.a8; i <= SQUARES.h1; i++) {
-                if (i & 0x88) { i += 7; continue; }
-                const piece = this._board[i];
-                if (piece == null || piece.color !== us) continue;
-
-                if (piece.type === PAWN) {
-                    const square1 = i + PAWN_OFFSETS[us][0];
-                    if (this._board[square1] == null) {
-                        if (rank(square1) === (us === WHITE ? RANK_8 : RANK_1)) {
-                            [QUEEN, ROOK, BISHOP, KNIGHT].forEach(p => add_move(i, square1, BITS.PROMOTION, p));
-                        } else {
-                            add_move(i, square1, BITS.NORMAL);
-                            const square2 = i + PAWN_OFFSETS[us][1];
-                            if (rank(i) === second_rank[us] && this._board[square2] == null) {
-                                add_move(i, square2, BITS.BIG_PAWN);
-                            }
-                        }
-                    }
-
-                    for (let j = 2; j < 4; j++) {
-                        const square3 = i + PAWN_OFFSETS[us][j];
-                        if (square3 & 0x88) continue;
-
-                        if (this._board[square3] != null && this._board[square3].color === them) {
-                            if (rank(square3) === (us === WHITE ? RANK_8 : RANK_1)) {
-                                [QUEEN, ROOK, BISHOP, KNIGHT].forEach(p => add_move(i, square3, BITS.PROMOTION | BITS.CAPTURE, p));
-                            } else {
-                                add_move(i, square3, BITS.CAPTURE);
-                            }
-                        } else if (square3 === this._ep_square) {
-                            add_move(i, square3, BITS.EP_CAPTURE);
-                        }
-                    }
-                } else if (piece.type === KING) {
-                    const offsets = PIECE_OFFSETS.k;
-                    for (let j = 0; j < offsets.length; j++) {
-                        const square = i + offsets[j];
-                        if (square & 0x88) continue;
-                        if (this._board[square] == null) {
-                            add_move(i, square, BITS.NORMAL);
-                        } else if (this._board[square].color === them) {
-                            add_move(i, square, BITS.CAPTURE);
-                        }
-                    }
-
-                    if (this._castling[us] & BITS.KSIDE_CASTLE) {
-                        const castling_to = i + 2;
-                        if (this._board[i + 1] == null && this._board[castling_to] == null &&
-                            !this._attacked(them, this._kings[us]) &&
-                            !this._attacked(them, i + 1) &&
-                            !this._attacked(them, castling_to)) {
-                            add_move(i, castling_to, BITS.KSIDE_CASTLE);
-                        }
-                    }
-                    if (this._castling[us] & BITS.QSIDE_CASTLE) {
-                        const castling_to = i - 2;
-                        if (this._board[i - 1] == null && this._board[i - 2] == null && this._board[i - 3] == null &&
-                            !this._attacked(them, this._kings[us]) &&
-                            !this._attacked(them, i - 1) &&
-                            !this._attacked(them, castling_to)) {
-                            add_move(i, castling_to, BITS.QSIDE_CASTLE);
-                        }
-                    }
-                } else {
-                    const offsets = PIECE_OFFSETS[piece.type];
-                    const single_step = (piece.type === KNIGHT);
-                    for (let j = 0; j < offsets.length; j++) {
-                        const offset = offsets[j];
-                        let square = i + offset;
-                        while (!(square & 0x88)) {
-                            if (this._board[square] == null) {
-                                add_move(i, square, BITS.NORMAL);
-                            } else {
-                                if (this._board[square].color === them) {
-                                    add_move(i, square, BITS.CAPTURE);
-                                }
-                                break;
-                            }
-                            if (single_step) break;
-                            square += offset;
-                        }
-                    }
-                }
-            }
-
-            return moves;
-        }
-
-        _make_move(move) {
-            const us = this._turn;
-            const them = swap_color(us);
-
-            this._history.push({
-                move: move,
-                kings: { b: this._kings.b, w: this._kings.w },
-                turn: this._turn,
-                castling: { b: this._castling.b, w: this._castling.w },
-                ep_square: this._ep_square,
-                half_moves: this._half_moves,
-                move_number: this._move_number
-            });
-
-            this._board[move.to] = this._board[move.from];
-            this._board[move.from] = null;
-
-            if (move.flags & BITS.EP_CAPTURE) {
-                if (this._turn === BLACK) {
-                    this._board[move.to - 16] = null;
-                } else {
-                    this._board[move.to + 16] = null;
-                }
-            }
-
-            if (move.flags & BITS.PROMOTION) {
-                this._board[move.to] = { type: move.promotion, color: us };
-            }
-
-            if (this._board[move.to].type === KING) {
-                this._kings[this._board[move.to].color] = move.to;
-
-                if (move.flags & BITS.KSIDE_CASTLE) {
-                    const castling_to = move.to - 1;
-                    const castling_from = move.to + 1;
-                    this._board[castling_to] = this._board[castling_from];
-                    this._board[castling_from] = null;
-                } else if (move.flags & BITS.QSIDE_CASTLE) {
-                    const castling_to = move.to + 1;
-                    const castling_from = move.to - 2;
-                    this._board[castling_to] = this._board[castling_from];
-                    this._board[castling_from] = null;
-                }
-
-                this._castling[us] = 0;
-            }
-
-            if (this._castling[us]) {
-                for (let i = 0; i < ROOKS[us].length; i++) {
-                    if (move.from === ROOKS[us][i].square && ((this._castling[us] & ROOKS[us][i].flag))) {
-                        this._castling[us] ^= ROOKS[us][i].flag;
-                        break;
-                    }
-                }
-            }
-            if (this._castling[them]) {
-                for (let i = 0; i < ROOKS[them].length; i++) {
-                    if (move.to === ROOKS[them][i].square && ((this._castling[them] & ROOKS[them][i].flag))) {
-                        this._castling[them] ^= ROOKS[them][i].flag;
-                        break;
-                    }
-                }
-            }
-
-            if (move.flags & BITS.BIG_PAWN) {
-                if (this._turn === 'b') {
-                    this._ep_square = move.to - 16;
-                } else {
-                    this._ep_square = move.to + 16;
-                }
-            } else {
-                this._ep_square = -1;
-            }
-
-            if (move.piece === PAWN || (move.flags & (BITS.CAPTURE | BITS.EP_CAPTURE))) {
-                this._half_moves = 0;
-            } else {
-                this._half_moves++;
-            }
-
-            if (this._turn === BLACK) {
-                this._move_number++;
-            }
-            this._turn = swap_color(this._turn);
-        }
-
-        _undo_move() {
-            const old = this._history.pop();
-            if (old == null) return null;
-
-            const move = old.move;
-            this._kings = old.kings;
-            this._turn = old.turn;
-            this._castling = old.castling;
-            this._ep_square = old.ep_square;
-            this._half_moves = old.half_moves;
-            this._move_number = old.move_number;
-
-            const us = this._turn;
-            const them = swap_color(this._turn);
-
-            this._board[move.from] = this._board[move.to];
-            this._board[move.from].type = move.piece;
-            this._board[move.to] = null;
-
-            if (move.flags & BITS.CAPTURE) {
-                this._board[move.to] = { type: move.captured, color: them };
-            } else if (move.flags & BITS.EP_CAPTURE) {
-                const index = (us === BLACK) ? move.to - 16 : move.to + 16;
-                this._board[index] = { type: PAWN, color: them };
-            }
-
-            if (move.flags & (BITS.KSIDE_CASTLE | BITS.QSIDE_CASTLE)) {
-                let castling_to, castling_from;
-                if (move.flags & BITS.KSIDE_CASTLE) {
-                    castling_to = move.to + 1;
-                    castling_from = move.to - 1;
-                } else if (move.flags & BITS.QSIDE_CASTLE) {
-                    castling_to = move.to - 2;
-                    castling_from = move.to + 1;
-                }
-                this._board[castling_to] = this._board[castling_from];
-                this._board[castling_from] = null;
-            }
-
-            return move;
-        }
-
-        moves(options) {
-            const ugly_moves = this._generate_moves();
-            const legal_moves = [];
-            const us = this._turn;
-
-            for (let i = 0; i < ugly_moves.length; i++) {
-                this._make_move(ugly_moves[i]);
-                if (!this._attacked(this._turn, this._kings[us])) {
-                    if (options && options.verbose) {
-                        legal_moves.push({
-                            color: ugly_moves[i].color,
-                            from: algebraic(ugly_moves[i].from),
-                            to: algebraic(ugly_moves[i].to),
-                            flags: ugly_moves[i].flags,
-                            piece: ugly_moves[i].piece,
-                            captured: ugly_moves[i].captured,
-                            promotion: ugly_moves[i].promotion
-                        });
-                    } else {
-                        legal_moves.push(ugly_moves[i]);
-                    }
-                }
-                this._undo_move();
-            }
-
-            return legal_moves;
-        }
-
-        move(move_obj) {
-            let from, to, promo;
-            if (typeof move_obj === 'string') {
-                from = move_obj.slice(0, 2);
-                to = move_obj.slice(2, 4);
-                promo = move_obj[4];
-            } else {
-                from = move_obj.from;
-                to = move_obj.to;
-                promo = move_obj.promotion;
-            }
-
-            const ugly_moves = this._generate_moves();
-            const from_sq = SQUARES[from];
-            const to_sq = SQUARES[to];
-            const us = this._turn;
-
-            for (let i = 0; i < ugly_moves.length; i++) {
-                const m = ugly_moves[i];
-                if (m.from === from_sq && m.to === to_sq && (!m.promotion || m.promotion === promo)) {
-                    this._make_move(m);
-                    if (this._attacked(this._turn, this._kings[us])) {
-                        this._undo_move();
-                        return null;
-                    }
-                    return {
-                        from: from,
-                        to: to,
-                        promotion: promo,
-                        piece: m.piece,
-                        captured: m.captured
-                    };
-                }
-            }
-            return null;
-        }
-
-        in_checkmate() {
-            return this.in_check() && this.moves().length === 0;
-        }
-
-        in_stalemate() {
-            return !this.in_check() && this.moves().length === 0;
-        }
-
-        game_over() {
-            return this.in_checkmate() || this.in_stalemate() || this._half_moves >= 100;
-        }
-    }
-
-    return { Chess };
-})();
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  MOVE NORMALIZATION & STRICT FID-RULE VALIDATION
-// ══════════════════════════════════════════════════════════════════════════════
-
-const UCI_RE = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
-const validUCI = s => typeof s === "string" && UCI_RE.test(s.trim().toLowerCase());
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-/**
- * Normalizes UCI string (handling Chess960 castling and implicit promotions)
- * and verifies that it is 100% strictly legal in the active FEN.
- * Returns verified UCI string or null.
- */
-function normalizeAndValidateMove(fen, uci) {
-    if (!fen || !uci || typeof uci !== "string") return null;
-    uci = uci.trim().toLowerCase();
-    if (uci.length < 4) return null;
-
+const SOL_CFG = {
+    boardInsetRatio: 64 / 648,
+    clickDelay:      50,
+    moveDelay:       60,
+    enemyDelay:      180,
+    continueDelay:   60,
+    autoContinue:    true,
+    flipped:         false,
+};
+
+const STORE_KEY = "duochess.v52.settings";
+
+function loadSettings() {
     try {
-        const chess = new Chess(fen);
-        let from = uci.slice(0, 2);
-        let to = uci.slice(2, 4);
-        let promo = uci[4] ? uci[4].toLowerCase() : null;
+        const saved = JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
+        if (saved.bot) Object.assign(BOT_CFG, saved.bot);
+        if (saved.solver) Object.assign(SOL_CFG, saved.solver);
+    } catch (_) {}
+}
 
-        // Normalize Chess960 castling notation (king onto rook)
-        const piece = chess.get(from);
-        if (piece && piece.type === "k") {
-            if (from === "e1" && to === "h1") to = "g1";
-            else if (from === "e1" && to === "a1") to = "c1";
-            else if (from === "e8" && to === "h8") to = "g8";
-            else if (from === "e8" && to === "a8") to = "c8";
+function saveSettings() {
+    try {
+        localStorage.setItem(STORE_KEY, JSON.stringify({
+            bot: BOT_CFG,
+            solver: SOL_CFG
+        }));
+    } catch (_) {}
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  STATE & UTILITIES
+// ══════════════════════════════════════════════════════════════════════════════
+
+const sleep    = ms => new Promise(r => setTimeout(r, ms));
+const UCI_RE   = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
+const validUCI = s => typeof s === "string" && UCI_RE.test(s.trim());
+const toUCI    = s => String(s).trim().split(/\s+/).filter(validUCI);
+const esc      = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+const fenSide  = fen => (fen?.split(" ")?.[1] ?? "w").toLowerCase();
+
+let _lastStateChange = Date.now();
+let _lastMoveAttemptTime = 0;
+let _lastMoveSentTime = 0;
+let _lastAttemptedFen = null;
+let _lastAttemptCount = 0;
+let _lastFetchTime = 0;
+const _finishedMatchIds = new Set();
+
+const BOT_S = {
+    matchId: null,
+    playerColor: "white",
+    currentFen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+    lastRecordedFen: null,
+    turnInProgress: false,
+    moveHistory: [],
+    status: "idle",
+    authToken: null,
+    engineName: "Embedded GM",
+    lastMove: null,
+};
+
+function setStatus(newStatus) {
+    if (BOT_S.status !== newStatus) {
+        BOT_S.status = newStatus;
+        _lastStateChange = Date.now();
+        renderPanel();
+    }
+}
+
+const SOL_STATE = {
+    raw: null,
+    challenges: [],
+    currentIdx: 0,
+    solving: false
+};
+
+loadSettings();
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  FULL EMBEDDED HIGH-PERFORMANCE CHESS ENGINE (ZERO NETWORK HANG)
+// ══════════════════════════════════════════════════════════════════════════════
+
+const PIECE_VALS = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
+
+const PST_PAWN = [
+     0,  0,  0,  0,  0,  0,  0,  0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+     5,  5, 10, 25, 25, 10,  5,  5,
+     0,  0,  0, 20, 20,  0,  0,  0,
+     5, -5,-10,  0,  0,-10, -5,  5,
+     5, 10, 10,-20,-20, 10, 10,  5,
+     0,  0,  0,  0,  0,  0,  0,  0
+];
+
+const PST_KNIGHT = [
+    -50,-40,-30,-30,-30,-30,-40,-50,
+    -40,-20,  0,  0,  0,  0,-20,-40,
+    -30,  0, 10, 15, 15, 10,  0,-30,
+    -30,  5, 15, 20, 20, 15,  5,-30,
+    -30,  0, 15, 20, 20, 15,  0,-30,
+    -30,  5, 10, 15, 15, 10,  5,-30,
+    -40,-20,  0,  5,  5,  0,-20,-40,
+    -50,-40,-30,-30,-30,-30,-40,-50,
+];
+
+const PST_BISHOP = [
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  0, 10, 10, 10, 10,  0,-10,
+    -10, 10, 10, 10, 10, 10, 10,-10,
+    -10,  5,  0,  0,  0,  0,  5,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20,
+];
+
+class FastChess {
+    constructor(fen) {
+        this.board = new Array(64).fill(null);
+        this.turn = "w";
+        this.castling = { K: false, Q: false, k: false, q: false };
+        this.epSquare = null;
+        this.halfMoves = 0;
+        this.fullMoves = 1;
+        if (fen) this.loadFen(fen);
+    }
+
+    loadFen(fen) {
+        this.board.fill(null);
+        const parts = fen.trim().split(/\s+/);
+        const rows = parts[0].split("/");
+        for (let r = 0; r < 8; r++) {
+            let col = 0;
+            for (const ch of rows[r]) {
+                if (ch >= "1" && ch <= "8") {
+                    col += Number(ch);
+                } else {
+                    const color = ch === ch.toUpperCase() ? "w" : "b";
+                    this.board[r * 8 + col] = { type: ch.toLowerCase(), color };
+                    col++;
+                }
+            }
+        }
+        this.turn = parts[1] ? parts[1].toLowerCase() : "w";
+        const cast = parts[2] || "-";
+        this.castling.K = cast.includes("K");
+        this.castling.Q = cast.includes("Q");
+        this.castling.k = cast.includes("k");
+        this.castling.q = cast.includes("q");
+        this.epSquare = (parts[3] && parts[3] !== "-") ? this._sqToIdx(parts[3]) : null;
+    }
+
+    _sqToIdx(sq) {
+        const f = sq.charCodeAt(0) - 97;
+        const r = 8 - Number(sq[1]);
+        return r * 8 + f;
+    }
+
+    _idxToSq(idx) {
+        const f = String.fromCharCode(97 + (idx % 8));
+        const r = 8 - Math.floor(idx / 8);
+        return `${f}${r}`;
+    }
+
+    clone() {
+        const c = new FastChess();
+        c.board = this.board.map(p => p ? { type: p.type, color: p.color } : null);
+        c.turn = this.turn;
+        c.castling = { ...this.castling };
+        c.epSquare = this.epSquare;
+        c.halfMoves = this.halfMoves;
+        c.fullMoves = this.fullMoves;
+        return c;
+    }
+
+    isSquareAttacked(sqIdx, attackerColor) {
+        const r = Math.floor(sqIdx / 8), f = sqIdx % 8;
+        // Pawn attacks
+        const pDir = attackerColor === "w" ? 1 : -1;
+        const pr = r + pDir;
+        if (pr >= 0 && pr < 8) {
+            if (f > 0) {
+                const p = this.board[pr * 8 + f - 1];
+                if (p && p.color === attackerColor && p.type === "p") return true;
+            }
+            if (f < 7) {
+                const p = this.board[pr * 8 + f + 1];
+                if (p && p.color === attackerColor && p.type === "p") return true;
+            }
+        }
+        // Knight attacks
+        const nOffsets = [-17, -15, -10, -6, 6, 10, 15, 17];
+        for (const off of nOffsets) {
+            const target = sqIdx + off;
+            if (target >= 0 && target < 64) {
+                const tr = Math.floor(target / 8), tf = target % 8;
+                const dr = Math.abs(tr - r), df = Math.abs(tf - f);
+                if ((dr === 1 && df === 2) || (dr === 2 && df === 1)) {
+                    const p = this.board[target];
+                    if (p && p.color === attackerColor && p.type === "n") return true;
+                }
+            }
+        }
+        // Ray attacks (Bishop, Rook, Queen)
+        const rayDirs = [
+            [-1, 0, ["r", "q"]], [1, 0, ["r", "q"]], [0, -1, ["r", "q"]], [0, 1, ["r", "q"]],
+            [-1, -1, ["b", "q"]], [-1, 1, ["b", "q"]], [1, -1, ["b", "q"]], [1, 1, ["b", "q"]]
+        ];
+        for (const [dr, df, types] of rayDirs) {
+            let cr = r + dr, cf = f + df;
+            while (cr >= 0 && cr < 8 && cf >= 0 && cf < 8) {
+                const p = this.board[cr * 8 + cf];
+                if (p) {
+                    if (p.color === attackerColor && types.includes(p.type)) return true;
+                    break;
+                }
+                cr += dr; cf += df;
+            }
+        }
+        // King attacks
+        for (let dr = -1; dr <= 1; dr++) {
+            for (let df = -1; df <= 1; df++) {
+                if (dr === 0 && df === 0) continue;
+                const cr = r + dr, cf = f + df;
+                if (cr >= 0 && cr < 8 && cf >= 0 && cf < 8) {
+                    const p = this.board[cr * 8 + cf];
+                    if (p && p.color === attackerColor && p.type === "k") return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    inCheck(color) {
+        const c = color || this.turn;
+        const kingIdx = this.board.findIndex(p => p && p.color === c && p.type === "k");
+        if (kingIdx === -1) return false;
+        return this.isSquareAttacked(kingIdx, c === "w" ? "b" : "w");
+    }
+
+    generatePseudoMoves() {
+        const moves = [];
+        const us = this.turn, them = us === "w" ? "b" : "w";
+
+        for (let i = 0; i < 64; i++) {
+            const p = this.board[i];
+            if (!p || p.color !== us) continue;
+            const r = Math.floor(i / 8), f = i % 8;
+
+            if (p.type === "p") {
+                const dir = us === "w" ? -1 : 1;
+                const startRank = us === "w" ? 6 : 1;
+                const promoRank = us === "w" ? 0 : 7;
+                const fwd = i + dir * 8;
+
+                if (fwd >= 0 && fwd < 64 && !this.board[fwd]) {
+                    const isPromo = Math.floor(fwd / 8) === promoRank;
+                    if (isPromo) {
+                        for (const promo of ["q", "r", "b", "n"]) moves.push({ from: i, to: fwd, promo });
+                    } else {
+                        moves.push({ from: i, to: fwd });
+                        const fwd2 = i + dir * 16;
+                        if (r === startRank && !this.board[fwd2]) {
+                            moves.push({ from: i, to: fwd2 });
+                        }
+                    }
+                }
+                // Captures
+                for (const df of [-1, 1]) {
+                    const cf = f + df;
+                    if (cf >= 0 && cf < 8) {
+                        const target = (r + dir) * 8 + cf;
+                        if (target >= 0 && target < 64) {
+                            const isPromo = Math.floor(target / 8) === promoRank;
+                            const tp = this.board[target];
+                            if (tp && tp.color === them) {
+                                if (isPromo) {
+                                    for (const promo of ["q", "r", "b", "n"]) moves.push({ from: i, to: target, promo, capture: tp.type });
+                                } else {
+                                    moves.push({ from: i, to: target, capture: tp.type });
+                                }
+                            } else if (target === this.epSquare) {
+                                moves.push({ from: i, to: target, capture: "p", isEp: true });
+                            }
+                        }
+                    }
+                }
+            } else if (p.type === "n") {
+                for (const off of [-17, -15, -10, -6, 6, 10, 15, 17]) {
+                    const target = i + off;
+                    if (target >= 0 && target < 64) {
+                        const tr = Math.floor(target / 8), tf = target % 8;
+                        const dr = Math.abs(tr - r), df = Math.abs(tf - f);
+                        if ((dr === 1 && df === 2) || (dr === 2 && df === 1)) {
+                            const tp = this.board[target];
+                            if (!tp) moves.push({ from: i, to: target });
+                            else if (tp.color === them) moves.push({ from: i, to: target, capture: tp.type });
+                        }
+                    }
+                }
+            } else if (p.type === "b" || p.type === "r" || p.type === "q") {
+                const dirs = p.type === "b" ? [[-1,-1],[-1,1],[1,-1],[1,1]] :
+                             p.type === "r" ? [[-1,0],[1,0],[0,-1],[0,1]] :
+                             [[-1,-1],[-1,1],[1,-1],[1,1],[-1,0],[1,0],[0,-1],[0,1]];
+                for (const [dr, df] of dirs) {
+                    let cr = r + dr, cf = f + df;
+                    while (cr >= 0 && cr < 8 && cf >= 0 && cf < 8) {
+                        const target = cr * 8 + cf;
+                        const tp = this.board[target];
+                        if (!tp) {
+                            moves.push({ from: i, to: target });
+                        } else {
+                            if (tp.color === them) moves.push({ from: i, to: target, capture: tp.type });
+                            break;
+                        }
+                        cr += dr; cf += df;
+                    }
+                }
+            } else if (p.type === "k") {
+                for (let dr = -1; dr <= 1; dr++) {
+                    for (let df = -1; df <= 1; df++) {
+                        if (dr === 0 && df === 0) continue;
+                        const cr = r + dr, cf = f + df;
+                        if (cr >= 0 && cr < 8 && cf >= 0 && cf < 8) {
+                            const target = cr * 8 + cf;
+                            const tp = this.board[target];
+                            if (!tp) moves.push({ from: i, to: target });
+                            else if (tp.color === them) moves.push({ from: i, to: target, capture: tp.type });
+                        }
+                    }
+                }
+                // Castling
+                if (us === "w" && r === 7 && f === 4) {
+                    if (this.castling.K && !this.board[61] && !this.board[62] &&
+                        this.board[63]?.type === "r" && this.board[63]?.color === "w" &&
+                        !this.isSquareAttacked(60, "b") && !this.isSquareAttacked(61, "b") && !this.isSquareAttacked(62, "b")) {
+                        moves.push({ from: 60, to: 62, isCastle: true });
+                    }
+                    if (this.castling.Q && !this.board[59] && !this.board[58] && !this.board[57] &&
+                        this.board[56]?.type === "r" && this.board[56]?.color === "w" &&
+                        !this.isSquareAttacked(60, "b") && !this.isSquareAttacked(59, "b") && !this.isSquareAttacked(58, "b")) {
+                        moves.push({ from: 60, to: 58, isCastle: true });
+                    }
+                } else if (us === "b" && r === 0 && f === 4) {
+                    if (this.castling.k && !this.board[5] && !this.board[6] &&
+                        this.board[7]?.type === "r" && this.board[7]?.color === "b" &&
+                        !this.isSquareAttacked(4, "w") && !this.isSquareAttacked(5, "w") && !this.isSquareAttacked(6, "w")) {
+                        moves.push({ from: 4, to: 6, isCastle: true });
+                    }
+                    if (this.castling.q && !this.board[3] && !this.board[2] && !this.board[1] &&
+                        this.board[0]?.type === "r" && this.board[0]?.color === "b" &&
+                        !this.isSquareAttacked(4, "w") && !this.isSquareAttacked(3, "w") && !this.isSquareAttacked(2, "w")) {
+                        moves.push({ from: 4, to: 2, isCastle: true });
+                    }
+                }
+            }
+        }
+        return moves;
+    }
+
+    makeMove(m) {
+        const piece = this.board[m.from];
+        if (!piece) return;
+        this.board[m.from] = null;
+        if (m.promo) {
+            this.board[m.to] = { type: m.promo, color: piece.color };
+        } else {
+            this.board[m.to] = piece;
         }
 
-        // Auto-promotion normalization: if pawn reaches back rank, default to Queen
-        if (piece && piece.type === "p" && !promo) {
-            if ((piece.color === "w" && to[1] === "8") || (piece.color === "b" && to[1] === "1")) {
-                promo = "q";
+        // Handle En Passant capture
+        if (m.isEp) {
+            const epCapIdx = piece.color === "w" ? m.to + 8 : m.to - 8;
+            this.board[epCapIdx] = null;
+        }
+
+        // Handle Castling Rook move
+        if (m.isCastle) {
+            if (m.to === 62) { this.board[61] = this.board[63]; this.board[63] = null; }
+            else if (m.to === 58) { this.board[59] = this.board[56]; this.board[56] = null; }
+            else if (m.to === 6) { this.board[5] = this.board[7]; this.board[7] = null; }
+            else if (m.to === 2) { this.board[3] = this.board[0]; this.board[0] = null; }
+        }
+
+        // Update Castling Rights
+        if (piece.type === "k") {
+            if (piece.color === "w") { this.castling.K = false; this.castling.Q = false; }
+            else { this.castling.k = false; this.castling.q = false; }
+        } else if (piece.type === "r") {
+            if (m.from === 63) this.castling.K = false;
+            else if (m.from === 56) this.castling.Q = false;
+            else if (m.from === 7) this.castling.k = false;
+            else if (m.from === 0) this.castling.q = false;
+        }
+        if (m.to === 63) this.castling.K = false;
+        else if (m.to === 56) this.castling.Q = false;
+        else if (m.to === 7) this.castling.k = false;
+        else if (m.to === 0) this.castling.q = false;
+
+        // Update turn
+        this.turn = this.turn === "w" ? "b" : "w";
+    }
+
+    getLegalMoves() {
+        const pseudos = this.generatePseudoMoves();
+        const legal = [];
+        for (const m of pseudos) {
+            const clone = this.clone();
+            clone.makeMove(m);
+            if (!clone.inCheck(this.turn)) {
+                legal.push(m);
+            }
+        }
+        return legal;
+    }
+
+    evaluate() {
+        let score = 0;
+        for (let i = 0; i < 64; i++) {
+            const p = this.board[i];
+            if (!p) continue;
+            let val = PIECE_VALS[p.type] || 0;
+            const r = Math.floor(i / 8), f = i % 8;
+            const tableIdx = p.color === "w" ? i : (7 - r) * 8 + f;
+
+            if (p.type === "p") val += PST_PAWN[tableIdx] || 0;
+            else if (p.type === "n") val += PST_KNIGHT[tableIdx] || 0;
+            else if (p.type === "b") val += PST_BISHOP[tableIdx] || 0;
+
+            score += p.color === "w" ? val : -val;
+        }
+        return this.turn === "w" ? score : -score;
+    }
+
+    minimax(depth, alpha, beta) {
+        if (depth === 0) return this.evaluate();
+        const moves = this.getLegalMoves();
+        if (moves.length === 0) {
+            if (this.inCheck(this.turn)) return -100000 - depth; // Checkmate
+            return 0; // Stalemate
+        }
+
+        // Sort captures first
+        moves.sort((a, b) => (b.capture ? 10 : 0) - (a.capture ? 10 : 0));
+
+        let maxEval = -Infinity;
+        for (const m of moves) {
+            const clone = this.clone();
+            clone.makeMove(m);
+            const ev = -clone.minimax(depth - 1, -beta, -alpha);
+            if (ev > maxEval) maxEval = ev;
+            if (ev > alpha) alpha = ev;
+            if (alpha >= beta) break;
+        }
+        return maxEval;
+    }
+
+    getBestMove(depth = 3) {
+        const moves = this.getLegalMoves();
+        if (!moves.length) return null;
+
+        // Instant Checkmate Scan
+        for (const m of moves) {
+            const clone = this.clone();
+            clone.makeMove(m);
+            const oppLegal = clone.getLegalMoves();
+            if (oppLegal.length === 0 && clone.inCheck(clone.turn)) {
+                return this.moveToUci(m);
             }
         }
 
-        const legal = chess.moves({ verbose: true });
-        const match = legal.find(m => m.from === from && m.to === to && (!promo || m.promotion === promo));
-        if (match) {
-            return `${match.from}${match.to}${match.promotion || ""}`;
+        moves.sort((a, b) => (b.capture ? 10 : 0) - (a.capture ? 10 : 0));
+
+        let bestMove = moves[0];
+        let bestVal = -Infinity;
+        let alpha = -Infinity;
+        const beta = Infinity;
+
+        for (const m of moves) {
+            const clone = this.clone();
+            clone.makeMove(m);
+            const ev = -clone.minimax(depth - 1, -beta, -alpha);
+            if (ev > bestVal) {
+                bestVal = ev;
+                bestMove = m;
+            }
+            if (ev > alpha) alpha = ev;
         }
-    } catch (_) {}
+        return this.moveToUci(bestMove);
+    }
+
+    moveToUci(m) {
+        return `${this._idxToSq(m.from)}${this._idxToSq(m.to)}${m.promo || ""}`;
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  MOVE FINDER WITH STOCKFISH 16+, LICHESS CLOUD & EMBEDDED ENGINE
+// ══════════════════════════════════════════════════════════════════════════════
+
+function gmHttpFetch(url, timeoutMs = 4000, opts = {}) {
+    return new Promise((resolve, reject) => {
+        const gmReq = (typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : (typeof GM !== "undefined" && GM.xmlHttpRequest ? GM.xmlHttpRequest : null));
+        const method = opts.method || "GET";
+        const data = opts.data || null;
+        const headers = { "Accept": "application/json", ...(opts.headers || {}) };
+
+        if (gmReq) {
+            try {
+                gmReq({
+                    method: method,
+                    url: url,
+                    data: data,
+                    timeout: timeoutMs,
+                    headers: headers,
+                    onload: (res) => {
+                        if (res.status >= 200 && res.status < 300) {
+                            try {
+                                resolve(JSON.parse(res.responseText));
+                            } catch (e) {
+                                reject(e);
+                            }
+                        } else {
+                            reject(new Error(`HTTP ${res.status}`));
+                        }
+                    },
+                    onerror: (err) => reject(err),
+                    ontimeout: () => reject(new Error("Timeout"))
+                });
+                return;
+            } catch (_) {}
+        }
+
+        // Fallback to fetch
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), timeoutMs);
+        const fetchOpts = { method, headers, signal: controller.signal };
+        if (data) fetchOpts.body = data;
+
+        fetch(url, fetchOpts)
+            .then(r => {
+                clearTimeout(tid);
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                return r.json();
+            })
+            .then(resolve)
+            .catch(reject);
+    });
+}
+
+function getBookMove(fen) {
+    const fenSimple = fen.split(" ").slice(0, 4).join(" ");
+    const openingBook = {
+        // Standard high-level openings for White
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -": "e2e4",
+        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "g1f3", // King's Knight
+        "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -": "f1c4", // Italian Game
+        "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq -": "d2d3", // Giuoco Pianissimo
+        "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq -": "c2c3", // Main Italian line
+        "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "g1f3", // Open Sicilian
+        "rnbqkbnr/pppp1ppp/4p3/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "d2d4", // French Defense
+        "rnbqkbnr/ppppp1pp/8/5p2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "e4f5", // vs Dutch
+        "rnbqkbnr/pppppp1p/8/6p1/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "d2d4", // vs Borg / Grob
+
+        // High-level defense for Black
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3": "e7e5", // Open Game
+        "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3": "d7d5", // Queen's Pawn Game
+        "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq -": "d7d5", // Reti Opening
+        "rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq c3": "e7e5", // English Opening
+        "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq -": "b8c6", // Defense against Nf3
+        "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq -": "g8f6", // Two Knights Defense
+        "r1bqkbnr/pppp1ppp/2n5/4p3/1bB1P3/5N2/PPPP1PPP/RNBQK2R b KQkq -": "g8f6",
+        "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq -": "a7a6", // Ruy Lopez Morphy Defense
+    };
+    return openingBook[fenSimple] ?? null;
+}
+
+async function getLichessCloudMove(fen) {
+    try {
+        const encodedFen = encodeURIComponent(fen);
+        const data = await gmHttpFetch(`https://lichess.org/api/cloud-eval?fen=${encodedFen}&multiPv=1`, 1500);
+        if (data && Array.isArray(data.pvs) && data.pvs[0] && data.pvs[0].moves) {
+            const mv = data.pvs[0].moves.split(/\s+/)[0];
+            if (validUCI(mv)) return mv;
+        }
+        return null;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function getFastStockfishMove(fen) {
+    try {
+        const encodedFen = encodeURIComponent(fen);
+        const depth = BOT_CFG.stockfishDepth || 15;
+        const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodedFen}&depth=${depth}&mode=bestmove`, 3500);
+        if (!data || !data.success || !data.bestmove) return null;
+        const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
+        return validUCI(mv) ? mv : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function getChessApiMove(fen) {
+    try {
+        const data = await gmHttpFetch("https://chess-api.com/v1", 3500, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            data: JSON.stringify({ fen: fen, depth: 15 })
+        });
+        if (data && (data.move || (data.from && data.to))) {
+            const mv = data.move || (data.from + data.to + (data.promotion || ""));
+            return validUCI(mv) ? mv : null;
+        }
+        return null;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function getBestMove(fen) {
+    try {
+        const engine = new FastChess(fen);
+        const legalMoves = engine.getLegalMoves();
+        if (!legalMoves || legalMoves.length === 0) return null;
+        const legalUcis = legalMoves.map(m => engine.moveToUci(m));
+
+        // 1. Opening Book for instant, infallible master opening lines
+        const bookMv = getBookMove(fen);
+        if (bookMv && legalUcis.includes(bookMv)) {
+            BOT_S.engineName = "Book Opening";
+            return bookMv;
+        }
+
+        // 2. Instant Checkmate Scan in 1 move
+        for (const m of legalMoves) {
+            const clone = engine.clone();
+            clone.makeMove(m);
+            const oppLegal = clone.getLegalMoves();
+            if (oppLegal.length === 0 && clone.inCheck(clone.turn)) {
+                BOT_S.engineName = "Instant Mate";
+                return engine.moveToUci(m);
+            }
+        }
+
+        // 3. Multi-Provider Grandmaster Parallel Evaluation (Lichess Cloud + Stockfish Online + Chess-API)
+        const lichessPromise = getLichessCloudMove(fen).then(mv => (mv && legalUcis.includes(mv)) ? { name: "Lichess Cloud", move: mv } : null).catch(() => null);
+        const stockfishOnlinePromise = getFastStockfishMove(fen).then(mv => (mv && legalUcis.includes(mv)) ? { name: "Stockfish 16+", move: mv } : null).catch(() => null);
+        const chessApiPromise = getChessApiMove(fen).then(mv => (mv && legalUcis.includes(mv)) ? { name: "Stockfish 16+", move: mv } : null).catch(() => null);
+
+        // Fast path: Lichess Cloud
+        const cloudRes = await Promise.race([
+            lichessPromise,
+            new Promise(r => setTimeout(() => r(null), 1000))
+        ]);
+        if (cloudRes && cloudRes.move) {
+            BOT_S.engineName = cloudRes.name;
+            return cloudRes.move;
+        }
+
+        // Parallel Stockfish 16+ Engines
+        const fastSf = await Promise.race([stockfishOnlinePromise, chessApiPromise]);
+        if (fastSf && fastSf.move) {
+            BOT_S.engineName = fastSf.name;
+            return fastSf.move;
+        }
+
+        const [sf1, sf2, lcs] = await Promise.all([stockfishOnlinePromise, chessApiPromise, lichessPromise]);
+        const bestOnline = sf1 || sf2 || lcs;
+        if (bestOnline && bestOnline.move) {
+            BOT_S.engineName = bestOnline.name;
+            return bestOnline.move;
+        }
+
+        // Fallback: Local Minimax Engine (only if completely offline)
+        const bestMv = engine.getBestMove(3);
+        if (bestMv && legalUcis.includes(bestMv)) {
+            BOT_S.engineName = "Embedded GM";
+            return bestMv;
+        }
+
+        return legalUcis[0];
+    } catch (_) {
+        try {
+            const fallbackEngine = new FastChess(fen);
+            const legals = fallbackEngine.getLegalMoves();
+            if (legals.length) return fallbackEngine.moveToUci(legals[0]);
+        } catch (_) {}
+    }
 
     return null;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  PER-ACCOUNT CONSECUTIVE WIN STREAK & SETTINGS
+//  CANVAS DISCOVERY
 // ══════════════════════════════════════════════════════════════════════════════
 
-const BOT_S = {
-    userId: "0",
-    matchId: null,
-    playerColor: "white",
-    currentFen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-    status: "idle",
-    engineName: "Local GM",
-    lastMove: null,
-    consecutiveWins: 0,
-    bestStreak: 0,
-    authToken: null,
-};
+let _canvasCache = { el: null, t: 0 };
+
+function findCanvas() {
+    const now = Date.now();
+    const cacheMs = IS_MOBILE ? 200 : 100;
+    if (_canvasCache.el && _canvasCache.el.isConnected && (now - _canvasCache.t) < cacheMs) {
+        return _canvasCache.el;
+    }
+    const candidates = [...document.querySelectorAll("canvas")]
+        .filter(c => {
+            if (!c.isConnected) return false;
+            const r = c.getBoundingClientRect();
+            if (!(r.width > 140 && r.height > 140 && Math.abs(r.width / r.height - 1) < 0.4)) return false;
+            const cs = getComputedStyle(c);
+            if (cs.pointerEvents === "none") return false;
+            return true;
+        })
+        .sort((a, b) => {
+            const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+            return (rb.width * rb.height) - (ra.width * ra.height);
+        });
+    const picked = candidates[0] ?? null;
+    _canvasCache = { el: picked, t: now };
+    return picked;
+}
+
+async function waitCanvas(timeout = 8000) {
+    const t0 = Date.now();
+    const pollMs = IS_MOBILE ? 35 : 20;
+    while (Date.now() - t0 < timeout) {
+        const c = findCanvas();
+        if (c) return c;
+        await sleep(pollMs);
+    }
+    return null;
+}
+
+function canvasHash() {
+    const canvas = findCanvas();
+    if (!canvas) return null;
+    try {
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return null;
+        const w = Math.min(canvas.width, 64), h = Math.min(canvas.height, 64);
+        const d = ctx.getImageData(0, 0, w, h).data;
+        let s = 0;
+        for (let i = 0; i < d.length; i += 16) s = (s * 31 + d[i] + d[i + 1] + d[i + 2]) | 0;
+        return s;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function waitCanvasChange(baseline, timeout, interval) {
+    timeout  = timeout  ?? (IS_MOBILE ? 400 : 250);
+    interval = interval ?? (IS_MOBILE ? 25  : 15);
+    const canvas = findCanvas();
+    if (!canvas || baseline === null) {
+        await sleep(35);
+        return false;
+    }
+    try {
+        const ctx = canvas.getContext("2d");
+        if (!ctx) { await sleep(35); return false; }
+        const w = Math.min(canvas.width, 64), h = Math.min(canvas.height, 64);
+        const t0 = Date.now();
+        while (Date.now() - t0 < timeout) {
+            await sleep(interval);
+            try {
+                const d = ctx.getImageData(0, 0, w, h).data;
+                let s = 0;
+                for (let i = 0; i < d.length; i += 16) s = (s * 31 + d[i] + d[i + 1] + d[i + 2]) | 0;
+                if (s !== baseline) return true;
+            } catch (_) { return false; }
+        }
+    } catch (_) {}
+    return false;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  TOUCH & POINTER EVENT SYNTHESIS
+// ══════════════════════════════════════════════════════════════════════════════
+
+function createSyntheticTouch(el, x, y, id = 0) {
+    const px = Math.round(x + (window.scrollX || window.pageXOffset || 0));
+    const py = Math.round(y + (window.scrollY || window.pageYOffset || 0));
+    try {
+        if (typeof Touch === "function") {
+            return new Touch({
+                identifier: id,
+                target: el,
+                clientX: Math.round(x),
+                clientY: Math.round(y),
+                pageX: px,
+                pageY: py,
+                screenX: Math.round(x),
+                screenY: Math.round(y),
+                radiusX: 18,
+                radiusY: 18,
+                force: 1.0,
+            });
+        }
+    } catch (_) {}
+    return {
+        identifier: id,
+        target: el,
+        clientX: Math.round(x),
+        clientY: Math.round(y),
+        pageX: px,
+        pageY: py,
+        screenX: Math.round(x),
+        screenY: Math.round(y),
+        radiusX: 18,
+        radiusY: 18,
+        force: 1.0,
+    };
+}
+
+function dispatchMobileTouch(type, el, x, y, id = 0) {
+    if (!el) return;
+    const touch = createSyntheticTouch(el, x, y, id);
+    const touchList = (type === "touchend" || type === "touchcancel") ? [] : [touch];
+    const changedList = [touch];
+    try {
+        if (typeof TouchEvent === "function") {
+            const te = new TouchEvent(type, {
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                touches: touchList,
+                targetTouches: touchList,
+                changedTouches: changedList,
+            });
+            el.dispatchEvent(te);
+            return;
+        }
+    } catch (_) {}
+
+    try {
+        const ev = document.createEvent("TouchEvent") || document.createEvent("UIEvent");
+        if (ev && ev.initTouchEvent) {
+            ev.initTouchEvent(type, true, true, null, 1, Math.round(x), Math.round(y), Math.round(x), Math.round(y), false, false, false, false, touchList, touchList, changedList);
+            el.dispatchEvent(ev);
+        }
+    } catch (_) {}
+}
+
+function dispatchPointer(type, el, x, y, buttons = 0, button = 0, id = 1) {
+    if (!el) return;
+    const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0 };
+    const px = Math.round(x + (window.scrollX || window.pageXOffset || 0));
+    const py = Math.round(y + (window.scrollY || window.pageYOffset || 0));
+    const rx = Math.round(x), ry = Math.round(y);
+    const opts = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        clientX: rx,
+        clientY: ry,
+        screenX: rx,
+        screenY: ry,
+        button: button,
+        buttons: buttons,
+        pressure: buttons ? 0.5 : 0,
+        pointerId: id,
+        pointerType: IS_MOBILE ? "touch" : "mouse",
+        isPrimary: true,
+        width: 1,
+        height: 1,
+    };
+
+    let pe;
+    try {
+        if (typeof PointerEvent === "function") {
+            pe = new PointerEvent(type, opts);
+        } else {
+            pe = new MouseEvent(type, opts);
+        }
+    } catch (_) {
+        try {
+            pe = new MouseEvent(type, opts);
+        } catch (_) {
+            try {
+                pe = document.createEvent("MouseEvents");
+                pe.initMouseEvent(type, true, true, null, 1, rx, ry, rx, ry, false, false, false, false, button, null);
+            } catch (_) {}
+        }
+    }
+
+    if (pe) {
+        try {
+            Object.defineProperty(pe, "offsetX", { value: rx - r.left, configurable: true });
+            Object.defineProperty(pe, "offsetY", { value: ry - r.top,  configurable: true });
+            Object.defineProperty(pe, "pageX",   { value: px, configurable: true });
+            Object.defineProperty(pe, "pageY",   { value: py, configurable: true });
+            Object.defineProperty(pe, "x",       { value: rx, configurable: true });
+            Object.defineProperty(pe, "y",       { value: ry, configurable: true });
+        } catch (_) {}
+
+        try {
+            el.dispatchEvent(pe);
+        } catch (_) {}
+    }
+}
+
+async function dispatchTap(el, x, y, pressMs = 25) {
+    if (!el) return;
+    dispatchPointer("pointerdown", el, x, y, 1, 0, 1);
+    if (IS_MOBILE) dispatchMobileTouch("touchstart", el, x, y, 0);
+    dispatchPointer("mousedown", el, x, y, 1, 0, 1);
+
+    if (pressMs > 0) await sleep(pressMs);
+
+    dispatchPointer("pointerup", el, x, y, 0, 0, 1);
+    if (IS_MOBILE) dispatchMobileTouch("touchend", el, x, y, 0);
+    dispatchPointer("mouseup", el, x, y, 0, 0, 1);
+    dispatchPointer("click", el, x, y, 0, 0, 1);
+}
+
+async function dispatchDrag(el, x1, y1, x2, y2) {
+    if (!el) return;
+    dispatchPointer("pointerdown", el, x1, y1, 1, 0, 1);
+    if (IS_MOBILE) dispatchMobileTouch("touchstart", el, x1, y1, 0);
+    dispatchPointer("mousedown", el, x1, y1, 1, 0, 1);
+    await sleep(25);
+
+    dispatchPointer("pointermove", el, x2, y2, 1, 0, 1);
+    if (IS_MOBILE) dispatchMobileTouch("touchmove", el, x2, y2, 0);
+    dispatchPointer("mousemove", el, x2, y2, 1, 0, 1);
+    await sleep(25);
+
+    dispatchPointer("pointerup", el, x2, y2, 0, 0, 1);
+    if (IS_MOBILE) dispatchMobileTouch("touchend", el, x2, y2, 0);
+    dispatchPointer("mouseup", el, x2, y2, 0, 0, 1);
+    dispatchPointer("click", el, x2, y2, 0, 0, 1);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  COORDINATES & VERIFIED MOVE EXECUTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+function getSquareCoords(canvas, sq, insetRatio, flipped) {
+    const r = canvas.getBoundingClientRect();
+    const iw = r.width * insetRatio, ih = r.height * insetRatio;
+    const bw = r.width - (iw * 2),   bh = r.height - (ih * 2);
+    const file = sq.charCodeAt(0) - 97, rank = Number(sq[1]);
+    const col = flipped ? (7 - file) : file;
+    const row = flipped ? (rank - 1) : (8 - rank);
+    return {
+        x: r.left + iw + (col + 0.5) * (bw / 8),
+        y: r.top  + ih + (row + 0.5) * (bh / 8)
+    };
+}
+
+async function clickSquare(sq, insetRatio, flipped, pressMs) {
+    const canvas = await waitCanvas();
+    if (!canvas) return;
+    const p = getSquareCoords(canvas, sq, insetRatio, flipped);
+    await dispatchTap(canvas, p.x, p.y, pressMs ?? (IS_MOBILE ? 45 : 30));
+}
+
+async function clickCanvasFraction(colFrac, rowFrac, insetRatio, flipped, pressMs = 35) {
+    const canvas = findCanvas();
+    if (!canvas) return;
+    const r = canvas.getBoundingClientRect();
+    const iw = r.width * insetRatio, ih = r.height * insetRatio;
+    const bw = r.width - (iw * 2),   bh = r.height - (ih * 2);
+    const col = flipped ? (7 - colFrac) : colFrac;
+    const row = flipped ? (7 - rowFrac) : rowFrac;
+    const x = r.left + iw + col * (bw / 8);
+    const y = r.top  + ih + row * (bh / 8);
+
+    await dispatchTap(canvas, x, y, pressMs);
+
+    const topEl = document.elementFromPoint(x, y);
+    if (topEl && topEl !== canvas && !topEl.closest("#dc-pill")) {
+        simulateFullClick(topEl);
+    }
+}
+
+/**
+ * Clean & Deterministic Move Execution:
+ * 1. Tap source square to select piece.
+ * 2. Wait clickDelay so Duolingo highlights destination.
+ * 3. Tap destination square to place piece.
+ * 4. For castling: if King-to-target did not send within 100ms, try King-to-Rook tap.
+ */
+async function executeMove(uci, insetRatio, flipped) {
+    if (!validUCI(uci)) return false;
+    const fromSq = uci.slice(0, 2);
+    const toSq   = uci.slice(2, 4);
+    const canvas = await waitCanvas();
+    if (!canvas) return false;
+
+    const pFrom = getSquareCoords(canvas, fromSq, insetRatio, flipped);
+    const pTo   = getSquareCoords(canvas, toSq, insetRatio, flipped);
+    const t0 = Date.now();
+    const startFen = BOT_S.currentFen;
+
+    // 1. Select piece at source square
+    await dispatchTap(canvas, pFrom.x, pFrom.y, 25);
+    await sleep(BOT_CFG.clickDelay || 50);
+
+    // 2. Place piece at destination square
+    await dispatchTap(canvas, pTo.x, pTo.y, 25);
+    await sleep(BOT_CFG.moveDelay || 60);
+
+    // 3. Special Castling Fallback:
+    // If this is a castling move (e1g1, e1c1, e8g8, e8c8) and Duolingo has not registered it,
+    // some Duolingo interfaces highlight the friendly Rook square.
+    const isCastle = (uci === "e1g1" || uci === "e1c1" || uci === "e8g8" || uci === "e8c8");
+    if (isCastle) {
+        await sleep(60);
+        if (_lastMoveSentTime <= t0 && (!BOT_S.currentFen || BOT_S.currentFen === startFen)) {
+            const rookSq = uci === "e1g1" ? "h1" :
+                           uci === "e1c1" ? "a1" :
+                           uci === "e8g8" ? "h8" : "a8";
+            const pRook = getSquareCoords(canvas, rookSq, insetRatio, flipped);
+            await dispatchTap(canvas, pFrom.x, pFrom.y, 25);
+            await sleep(BOT_CFG.clickDelay || 50);
+            await dispatchTap(canvas, pRook.x, pRook.y, 25);
+            await sleep(BOT_CFG.moveDelay || 60);
+        }
+    }
+
+    return true;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PAWN PROMOTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+let _pendingPromotionSq = null;
+let _pendingPromotionTime = 0;
+
+function isPawnPromotion(fen, uci) {
+    if (!uci || uci.length < 4) return false;
+    if (uci.length >= 5) return true;
+    const from = uci.slice(0, 2), to = uci.slice(2, 4);
+    try {
+        const game = new FastChess(fen);
+        const sqIdx = game._sqToIdx(from);
+        const piece = game.board[sqIdx];
+        if (piece) {
+            return (piece.type === "p" || piece.type === "P") && (to[1] === "8" || to[1] === "1");
+        }
+    } catch (_) {}
+    return (to[1] === "8" && (from[1] === "7" || from[1] === "8")) || (to[1] === "1" && (from[1] === "2" || from[1] === "1"));
+}
+
+async function tapCanvasAt(canvas, x, y, pressMs = 35) {
+    if (!canvas) return;
+    await dispatchTap(canvas, x, y, pressMs);
+    try {
+        const topEl = document.elementFromPoint(x, y);
+        if (topEl && topEl !== canvas && !topEl.closest("#dc-pill")) {
+            await dispatchTap(topEl, x, y, pressMs);
+            simulateFullClick(topEl);
+        }
+    } catch (_) {}
+}
+
+function getPromotionQueenCoords(canvas, destSq, insetRatio, flipped) {
+    const r = canvas.getBoundingClientRect();
+    const iw = r.width * (insetRatio ?? 64 / 648);
+    const ih = r.height * (insetRatio ?? 64 / 648);
+    const bw = r.width - (iw * 2);
+    const bh = r.height - (ih * 2);
+
+    const coords = [];
+
+    // 1. Exact Queen icon in Duolingo "PAWN PROMOTION" canvas modal (File c, Row 3.0)
+    coords.push({ x: r.left + iw + 2.5 * (bw / 8), y: r.top + ih + 3.0 * (bh / 8) });
+    coords.push({ x: r.left + iw + 2.4 * (bw / 8), y: r.top + ih + 2.9 * (bh / 8) });
+    coords.push({ x: r.left + iw + 2.6 * (bw / 8), y: r.top + ih + 3.1 * (bh / 8) });
+
+    // 2. Alternate vertical alignments (Row 4.0 center, Row 5.0 lower)
+    coords.push({ x: r.left + iw + 2.5 * (bw / 8), y: r.top + ih + 4.0 * (bh / 8) });
+    coords.push({ x: r.left + iw + 2.5 * (bw / 8), y: r.top + ih + 5.0 * (bh / 8) });
+
+    // 3. Alternate horizontal alignment if modal is mirrored (File f, Column 5.5)
+    coords.push({ x: r.left + iw + 5.5 * (bw / 8), y: r.top + ih + 3.0 * (bh / 8) });
+
+    // 4. Destination square itself
+    if (destSq && destSq.length >= 2) {
+        coords.push(getSquareCoords(canvas, destSq, insetRatio, flipped));
+        coords.push(getSquareCoords(canvas, destSq, insetRatio, !flipped));
+    }
+
+    return coords;
+}
+
+function autoClickPromotion() {
+    let clicked = false;
+
+    // 1. Find any promotion popup container by text/class/attribute
+    try {
+        const promoContainers = Array.from(document.querySelectorAll(
+            '[data-test*="promotion" i], [class*="promotion" i], [id*="promotion" i], div[role="dialog"], [aria-label*="promotion" i]'
+        ));
+        for (const container of promoContainers) {
+            if (container.closest("#dc-pill")) continue;
+            const items = Array.from(container.querySelectorAll('button, [role="button"], img, svg, div[tabindex], div[class*="piece" i]'))
+                .filter(el => {
+                    if (el.closest("#dc-pill")) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width >= 16 && r.height >= 16 && r.width <= 160 && r.height <= 160;
+                });
+            if (items.length > 0) {
+                items.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+                const queen = items[0];
+                const qr = queen.getBoundingClientRect();
+                dispatchTap(queen, qr.left + qr.width / 2, qr.top + qr.height / 2, 35);
+                simulateFullClick(queen);
+                return true;
+            }
+        }
+    } catch (_) {}
+
+    // 2. Direct Queen Selectors & Modal Dialogs
+    const queenSelectors = [
+        `[data-piece="queen"]`, `[data-piece="q"]`, `[data-piece="Q"]`,
+        `[data-test*="queen" i]`, `[data-test*="player-piece-queen" i]`, `[data-test*="promotion-queen" i]`,
+        `button[aria-label*="queen" i]`, `div[role="button"][aria-label*="queen" i]`,
+        `img[alt*="queen" i]`, `img[src*="queen" i]`, `svg[data-piece*="queen" i]`,
+        `[aria-label*="hậu" i]`, `[aria-label*="dame" i]`, `[aria-label*="reina" i]`
+    ];
+
+    for (const sel of queenSelectors) {
+        const els = document.querySelectorAll(sel);
+        for (const el of els) {
+            if (isElementVisible(el) && !isForbiddenButton(el) && !el.closest("#dc-pill")) {
+                simulateFullClick(el);
+                clicked = true;
+                return true;
+            }
+        }
+    }
+
+    return clicked;
+}
+
+async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
+    _pendingPromotionSq = destSq || "q";
+    _pendingPromotionTime = Date.now();
+
+    try {
+        // 1. Allow Duolingo canvas promotion modal to mount and render piece options
+        await sleep(180);
+
+        const canvas = findCanvas();
+        if (!canvas) return false;
+
+        const coords = getPromotionQueenCoords(canvas, destSq, insetRatio, flipped);
+
+        for (let attempt = 0; attempt < 8; attempt++) {
+            // A. Check DOM promotion popup (if any)
+            if (autoClickPromotion()) {
+                return true;
+            }
+
+            // B. Canvas piece selection: Tap Queen modal icons on canvas
+            for (const pt of coords) {
+                await tapCanvasAt(canvas, pt.x, pt.y, 35);
+            }
+
+            // C. Send Queen keyboard triggers (Duolingo canvas listens to keydown 'q' / '1')
+            try {
+                for (const key of ["q", "Q", "1", "Enter"]) {
+                    const evOpts = { key, code: `Key${key.toUpperCase()}`, keyCode: key.toUpperCase().charCodeAt(0), bubbles: true, cancelable: true, composed: true };
+                    window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+                    document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+                }
+            } catch (_) {}
+
+            await sleep(75);
+        }
+    } finally {
+        _pendingPromotionSq = null;
+    }
+
+    return true;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  DOM ADVANCE FLOW & AUTO-CLICK REWARDS
+// ══════════════════════════════════════════════════════════════════════════════
+
+function isElementVisible(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.closest("#dc-pill")) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    const cs = window.getComputedStyle(el);
+    return cs.display !== "none" && cs.visibility !== "hidden" && cs.opacity !== "0";
+}
+
+function isForbiddenButton(el) {
+    if (!el) return true;
+    const test = (el.getAttribute("data-test") || "").toLowerCase();
+    const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+    return test === "quit-button" || test === "close-button" || aria === "quit" || aria === "close" || aria === "leave";
+}
+
+let _lastClickTime = 0;
+
+function simulateFullClick(el) {
+    if (!el || isForbiddenButton(el)) return false;
+    const now = Date.now();
+    if (now - _lastClickTime < 180) return false;
+    _lastClickTime = now;
+
+    try {
+        if (typeof el.focus === "function") el.focus();
+        if (typeof el.click === "function") el.click();
+
+        const rKey = Object.keys(el).find(k => k.startsWith("__reactProps$") || k.startsWith("__reactEventHandlers$") || k.startsWith("__reactFiber$"));
+        if (rKey && el[rKey]) {
+            const props = el[rKey].memoizedProps || el[rKey];
+            if (typeof props?.onClick === "function") {
+                try { props.onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: el, currentTarget: el }); } catch (_) {}
+            }
+        }
+
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+            const x = r.left + r.width / 2;
+            const y = r.top + r.height / 2;
+            dispatchTap(el, x, y, 15);
+        }
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+let _lastAdvanceKeyTime = 0;
+function pressGlobalAdvanceKeys() {
+    const now = Date.now();
+    if (now - _lastAdvanceKeyTime < 450) return;
+    _lastAdvanceKeyTime = now;
+
+    try {
+        for (const key of ["Enter", " "]) {
+            const code = key === " " ? "Space" : "Enter";
+            const keyCode = key === " " ? 32 : 13;
+            const evOpts = { key, code, keyCode, which: keyCode, bubbles: true, cancelable: true, composed: true };
+            window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+            document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+            window.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+            document.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+        }
+    } catch (_) {}
+}
+
+function autoMatchOscar() {
+    if (!BOT_CFG.autoMatch) return false;
+
+    // 1. Pawn promotion handling (only if promotion is actually pending)
+    if (_pendingPromotionSq && autoClickPromotion()) return true;
+
+    // 2. Direct Rematch / Play Again on Game-Over / Victory Screen
+    const rematchSelectors = [
+        'button[data-test*="rematch" i]', 'button[data-test*="play-again" i]',
+        'button[data-test*="new-game" i]', 'a[data-test*="rematch" i]',
+        '[role="button"][data-test*="rematch" i]'
+    ];
+    for (const sel of rematchSelectors) {
+        const btn = document.querySelector(sel);
+        if (btn && isElementVisible(btn) && !isForbiddenButton(btn)) {
+            setStatus("matching");
+            simulateFullClick(btn);
+            return true;
+        }
+    }
+
+    // 3. Clear Post-Match Summary / Reward screens ("Continue", "Claim XP", "Done", "Next")
+    const advanceSelectors = [
+        '[data-test*="player-next" i]', '[data-test*="continue-button" i]',
+        '[data-test*="claim-button" i]', '[data-test*="session-end-button" i]',
+        '[data-test*="next-button" i]', '[data-test*="bottom-nav-next-button" i]',
+        '[data-test*="challenge-next" i]', '[data-test*="player-practice-button" i]'
+    ];
+    for (const sel of advanceSelectors) {
+        const btn = document.querySelector(sel);
+        if (btn && isElementVisible(btn) && !isForbiddenButton(btn)) {
+            simulateFullClick(btn);
+            return true;
+        }
+    }
+
+    // 4. Oscar Modal / Drawer Launch CTA ("Start Match", "Play", "Play Oscar", "Start Game")
+    const launchSelectors = [
+        'button[data-test*="start-match" i]', 'button[data-test*="start-button" i]',
+        'button[data-test*="play-button" i]', 'button[data-test*="player-start-button" i]',
+        'button[data-test*="challenge-button" i]', 'button[data-test*="bot-play" i]'
+    ];
+    for (const sel of launchSelectors) {
+        const btn = document.querySelector(sel);
+        if (btn && isElementVisible(btn) && !isForbiddenButton(btn)) {
+            setStatus("matching");
+            simulateFullClick(btn);
+            return true;
+        }
+    }
+
+    // 5. Target Oscar Bot Tile / Card on Chess / Bots Screen
+    const oscarCardSelectors = [
+        '[data-test*="bot-oscar" i]', '[data-test*="character-oscar" i]',
+        '[data-test*="oscar-bot" i]', '[data-test*="character-card-oscar" i]',
+        '[aria-label*="oscar" i]'
+    ];
+    for (const sel of oscarCardSelectors) {
+        const card = document.querySelector(sel);
+        if (card && isElementVisible(card) && !isForbiddenButton(card)) {
+            setStatus("matching");
+            simulateFullClick(card);
+            return true;
+        }
+    }
+
+    // 6. Universal Semantic Keyword Match for Oscar, Rematch, and Advance CTAs
+    const candidates = Array.from(document.querySelectorAll(
+        'button, [role="button"], a, div[data-test], div[class*="card" i], div[class*="bot" i], div[class*="character" i], li'
+    ));
+
+    const oscarKws = ["play against oscar", "play oscar", "oscar", "start match", "start game", "play match", "play now", "play again", "rematch", "play", "start"];
+    const flowKws = ["continue", "tiếp tục", "tiep tuc", "next", "claim", "claim reward", "claim xp", "claim prize", "done", "check", "got it", "finish", "ready"];
+
+    for (const raw of candidates) {
+        const el = raw.closest("button, [role='button'], a, div[data-test]") || raw;
+        if (!isElementVisible(el) || isForbiddenButton(el)) continue;
+
+        const dataTest = (el.getAttribute("data-test") || "").toLowerCase();
+        const ariaLabel = (el.getAttribute("aria-label") || "").toLowerCase();
+        const txt = (el.innerText || el.textContent || "").trim().toLowerCase();
+
+        // Check Oscar / Rematch CTAs
+        for (const kw of oscarKws) {
+            if (txt === kw || (kw === "oscar" && /\boscar\b/i.test(txt)) || ariaLabel.includes(kw) || dataTest.includes(kw.replace(/\s+/g, "-"))) {
+                setStatus("matching");
+                simulateFullClick(el);
+                return true;
+            }
+        }
+
+        // Check End Flow CTAs
+        for (const kw of flowKws) {
+            if (txt === kw || txt.includes(kw) || ariaLabel.includes(kw) || dataTest.includes(kw.replace(/\s+/g, "-"))) {
+                simulateFullClick(el);
+                return true;
+            }
+        }
+    }
+
+    // 7. Fallback to global space/enter key if end-screen banner is active
+    pressGlobalAdvanceKeys();
+    return false;
+}
+
+function advanceFlow() {
+    if (!BOT_CFG.autoPlay && !BOT_CFG.autoMatch) return false;
+
+    if (_pendingPromotionSq && autoClickPromotion()) return true;
+
+    const candidates = Array.from(document.querySelectorAll(
+        'button, [role="button"], a, div[data-test*="button" i], div[data-test*="next" i], div[data-test*="continue" i], div[data-test*="start" i], div[data-test*="play" i]'
+    ));
+
+    const keywords = [
+        "continue", "tiếp tục", "tiep tuc", "next", "claim", "claim reward", "claim xp", "claim prize",
+        "play again", "rematch", "start lesson", "start session", "start", "play", "let's go", "done",
+        "check", "got it", "finish", "practice", "ready", "keep going", "continue learning"
+    ];
+
+    for (const rawBtn of candidates) {
+        const btn = rawBtn.closest("button, [role='button'], a") || rawBtn;
+        if (!isElementVisible(btn) || isForbiddenButton(btn)) continue;
+
+        const dataTest = (btn.getAttribute("data-test") || rawBtn.getAttribute("data-test") || "").toLowerCase();
+        const ariaLabel = (btn.getAttribute("aria-label") || rawBtn.getAttribute("aria-label") || "").toLowerCase();
+        const txt = (btn.innerText || btn.textContent || "").trim().toLowerCase();
+
+        if (dataTest.includes("player-next") || dataTest.includes("player-start-button") ||
+            dataTest.includes("continue-button") || dataTest.includes("claim-button") ||
+            dataTest.includes("start-button") || dataTest.includes("next-button") ||
+            dataTest.includes("bottom-nav-next-button") || dataTest.includes("play-button") ||
+            dataTest.includes("rematch-button") || dataTest.includes("session-end-button") ||
+            dataTest.includes("challenge-next") || dataTest.includes("player-practice-button")) {
+            simulateFullClick(btn);
+            return true;
+        }
+
+        for (const kw of keywords) {
+            if (txt === kw || txt.includes(kw) || ariaLabel.includes(kw) || dataTest.includes(kw.replace(/\s+/g, "-"))) {
+                simulateFullClick(btn);
+                return true;
+            }
+        }
+    }
+    pressGlobalAdvanceKeys();
+    return false;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  MATCH TURN EXECUTION & AUTO-MATCH
+// ══════════════════════════════════════════════════════════════════════════════
+
+const MATCHES_RE = /\/chess\b.*\/matches(?:\/([^/?#]+))?/;
+const MOVES_RE   = /\/chess\b.*\/matches\/[^/?#]+\/moves/;
+const isMatchURL = url => typeof url === "string" && (MATCHES_RE.test(url) || MOVES_RE.test(url) || /\/matches\b/i.test(url) || /\/chess-match\b/i.test(url));
+const isSessionURL = url => typeof url === "string" && /\/sessions(?:[/?#]|$)/i.test(url);
+
+function isOurTurn(fen) {
+    const s = fenSide(fen);
+    const color = (BOT_S.playerColor || "white").toLowerCase();
+    return (s === "w" && color === "white") || (s === "b" && color === "black");
+}
+
+function onMatchData(data) {
+    if (!data) return;
+    const match = data.match ?? (data.boardFen ? data : null) ?? (data.chessMatch ? data.chessMatch : null);
+    if (!match) return;
+
+    const uid = getUserId();
+    if (match.id && BOT_S.matchId !== match.id) {
+        BOT_S.matchId = match.id;
+        BOT_S.lastRecordedFen = null;
+        _lastAttemptedFen = null;
+        _lastAttemptCount = 0;
+        if (match.playerColor) BOT_S.playerColor = match.playerColor.toLowerCase();
+        else if (match.whitePlayer && (String(match.whitePlayer.userId) === uid || String(match.whitePlayer.id) === uid)) BOT_S.playerColor = "white";
+        else if (match.blackPlayer && (String(match.blackPlayer.userId) === uid || String(match.blackPlayer.id) === uid)) BOT_S.playerColor = "black";
+        else BOT_S.playerColor = "white";
+    }
+
+    if (match.boardFen && match.boardFen !== BOT_S.currentFen) {
+        BOT_S.currentFen = match.boardFen;
+        _lastAttemptedFen = null;
+        _lastAttemptCount = 0;
+        BOT_S.lastRecordedFen = BOT_S.currentFen;
+    }
+    if (Array.isArray(match.moveHistory)) BOT_S.moveHistory = [...match.moveHistory];
+
+    if (match.endCondition || match.status === "finished") {
+        if (match.id) _finishedMatchIds.add(String(match.id));
+        if (BOT_S.matchId) _finishedMatchIds.add(String(BOT_S.matchId));
+        BOT_S.matchId = null;
+        _lastAttemptedFen = null;
+        _lastAttemptCount = 0;
+        setStatus("idle");
+        if (BOT_CFG.autoMatch) {
+            autoMatchOscar();
+            setTimeout(autoMatchOscar, 250);
+            setTimeout(autoMatchOscar, 650);
+            setTimeout(autoMatchOscar, 1200);
+        } else {
+            advanceFlow();
+            setTimeout(advanceFlow, 300);
+            setTimeout(advanceFlow, 700);
+        }
+        return;
+    }
+
+    if (match.status === "active" || match.status === "in_progress" || !match.status) {
+        if (isOurTurn(BOT_S.currentFen)) {
+            if (!BOT_S.turnInProgress && BOT_S.status !== "playing") {
+                setStatus("our_turn");
+                if (BOT_CFG.autoPlay) setTimeout(takeTurn, BOT_CFG.thinkDelay);
+            }
+        } else {
+            if (BOT_S.status !== "thinking" && BOT_S.status !== "playing") {
+                setStatus("waiting");
+            }
+        }
+    }
+}
+
+async function takeTurn() {
+    if (BOT_S.turnInProgress) return;
+    if (!isOurTurn(BOT_S.currentFen)) return;
+
+    BOT_S.turnInProgress = true;
+    setStatus("thinking");
+
+    try {
+        const startFen = BOT_S.currentFen;
+        const move = await getBestMove(startFen);
+
+        if (!move || startFen !== BOT_S.currentFen) {
+            setStatus("idle");
+            return;
+        }
+
+        setStatus("playing");
+        BOT_S.lastMove = move;
+
+        const flip = BOT_CFG.flipped || (BOT_S.playerColor || "").toLowerCase() === "black";
+        const isPromotion = isPawnPromotion(startFen, move);
+
+        // Execute verified move
+        await executeMove(move, BOT_CFG.boardInsetRatio, flip);
+
+        // Handle Queen promotion if applicable
+        if (isPromotion) {
+            const promoChar = move[4] || "q";
+            await handlePromotion(move.slice(2, 4), promoChar, BOT_CFG.boardInsetRatio, flip);
+        }
+
+        await sleep(BOT_CFG.moveDelay);
+        _lastMoveAttemptTime = Date.now();
+        _lastAttemptedFen = startFen;
+        _lastAttemptCount = (_lastAttemptedFen === startFen ? _lastAttemptCount + 1 : 1);
+        setStatus("waiting");
+    } catch (_) {
+        setStatus("idle");
+    } finally {
+        BOT_S.turnInProgress = false;
+        renderPanel();
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SOLVER (PUZZLES & LESSONS)
+// ══════════════════════════════════════════════════════════════════════════════
+
+function buildSequence(info, fen) {
+    const correct = (info.correctMoves ?? []).flatMap(toUCI);
+    const enemy = (info.enemyMoves ?? []).flatMap(toUCI);
+    const validPth = (info.validPaths ?? []).map(v => toUCI(String(v)));
+    const hiMoves = (info.highlight ?? []).flatMap(v => String(v).match(/\b[a-h][1-8][a-h][1-8][qrbn]?\b/g) ?? []);
+
+    if (correct.length > 0) {
+        const steps = correct.map(m => ({ kind: "player", move: m }));
+        if (enemy.length > 0) {
+            const mixed = [];
+            correct.forEach((m, i) => {
+                mixed.push({ kind: "player", move: m });
+                if (i < enemy.length) mixed.push({ kind: "enemy", move: enemy[i] });
+            });
+            return { source: "correctMoves", steps: mixed, allPaths: validPth };
+        }
+        return { source: "correctMoves", steps, allPaths: validPth };
+    }
+    if (validPth.length > 0 && validPth[0].length > 0) {
+        return { source: "validPaths", steps: validPth[0].map(m => ({ kind: "player", move: m })), allPaths: validPth };
+    }
+    if (hiMoves.length > 0) {
+        return { source: "highlight", steps: hiMoves.map(m => ({ kind: "player", move: m })), allPaths: [] };
+    }
+    return { source: "none", steps: [], allPaths: [] };
+}
+
+function parseChallenge(raw, idx) {
+    const p = buildSequence(raw?.chessPuzzleInfo ?? {}, raw?.fen ?? "");
+    const isBlack = (raw?.playerColor === "black") || (raw?.fen && fenSide(raw.fen) === "b");
+    return { idx, id: raw.id ?? `ch_${idx}`, fen: raw.fen ?? "", isBlack, source: p.source, steps: p.steps, allPaths: p.allPaths, raw };
+}
+
+function processSession(session) {
+    if (!Array.isArray(session?.challenges)) return;
+    SOL_STATE.raw = session;
+    SOL_STATE.currentIdx = 0;
+    SOL_STATE.challenges = [...(session.challenges ?? []), ...(session.adaptiveChallenges ?? [])].map(parseChallenge);
+    renderPanel();
+    if (BOT_CFG.autoPlay && !SOL_STATE.solving) {
+        setTimeout(solveAll, 120);
+    }
+}
+
+async function solveChallenge(ch) {
+    if (!ch.steps.length) return;
+    const flip = SOL_CFG.flipped || !!ch.isBlack;
+
+    for (const step of ch.steps) {
+        renderPanel();
+        if (step.kind === "player") {
+            if (!validUCI(step.move)) continue;
+            const isPromotion = step.move.length >= 5 || (step.move[1] === "7" && step.move[3] === "8") || (step.move[1] === "2" && step.move[3] === "1");
+            await executeMove(step.move, SOL_CFG.boardInsetRatio, flip);
+            if (isPromotion) {
+                const promoChar = step.move[4] || "q";
+                await handlePromotion(step.move.slice(2, 4), promoChar, SOL_CFG.boardInsetRatio, flip);
+            }
+            await sleep(SOL_CFG.moveDelay);
+        } else {
+            const h1 = canvasHash();
+            await waitCanvasChange(h1, SOL_CFG.enemyDelay);
+            await sleep(IS_MOBILE ? 40 : 25);
+        }
+    }
+    if (SOL_CFG.autoContinue) {
+        await sleep(SOL_CFG.continueDelay);
+        advanceFlow();
+    }
+}
+
+async function solveAll() {
+    if (SOL_STATE.solving) return;
+    SOL_STATE.solving = true;
+    try {
+        while (SOL_STATE.currentIdx < SOL_STATE.challenges.length) {
+            const ch = SOL_STATE.challenges[SOL_STATE.currentIdx];
+            if (!ch) break;
+            await solveChallenge(ch);
+            SOL_STATE.currentIdx++;
+            renderPanel();
+            await sleep(IS_MOBILE ? 160 : 90);
+        }
+        await sleep(IS_MOBILE ? 220 : 130);
+        advanceFlow();
+    } finally {
+        SOL_STATE.solving = false;
+        renderPanel();
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  NETWORK INTERCEPTION & STATE RECOVERY
+// ══════════════════════════════════════════════════════════════════════════════
+
+let _lastSessionUrl = null;
 
 function getUserId() {
     if (BOT_S.userId && BOT_S.userId !== "0") return BOT_S.userId;
@@ -695,873 +1693,6 @@ function getUserId() {
     return "0";
 }
 
-function loadAccountStats() {
-    try {
-        const saved = JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
-        if (saved.bot) Object.assign(BOT_CFG, saved.bot);
-        const uid = getUserId();
-        const acc = (saved.accounts && saved.accounts[uid]) ? saved.accounts[uid] : null;
-        if (acc) {
-            BOT_S.consecutiveWins = acc.consecutiveWins || 0;
-            BOT_S.bestStreak = acc.bestStreak || 0;
-        } else {
-            BOT_S.consecutiveWins = 0;
-            BOT_S.bestStreak = 0;
-        }
-    } catch (_) {}
-}
-
-function saveAccountStats(lastMatchId) {
-    try {
-        const saved = JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
-        saved.bot = BOT_CFG;
-        if (!saved.accounts) saved.accounts = {};
-        const uid = getUserId();
-        saved.accounts[uid] = {
-            consecutiveWins: BOT_S.consecutiveWins,
-            bestStreak: BOT_S.bestStreak,
-            lastFinishedMatchId: lastMatchId || (saved.accounts[uid]?.lastFinishedMatchId ?? null)
-        };
-        localStorage.setItem(STORE_KEY, JSON.stringify(saved));
-    } catch (_) {}
-}
-
-function recordMatchOutcome(matchId, isWin) {
-    if (!matchId) return;
-    const uid = getUserId();
-    let saved = {};
-    try { saved = JSON.parse(localStorage.getItem(STORE_KEY) || "{}"); } catch (_) {}
-    if (!saved.accounts) saved.accounts = {};
-    const acc = saved.accounts[uid] || { consecutiveWins: 0, bestStreak: 0, lastFinishedMatchId: null };
-
-    if (acc.lastFinishedMatchId === String(matchId)) {
-        return; // Already accounted for this match
-    }
-
-    if (isWin) {
-        acc.consecutiveWins = (acc.consecutiveWins || 0) + 1;
-        acc.bestStreak = Math.max(acc.bestStreak || 0, acc.consecutiveWins);
-    } else {
-        acc.consecutiveWins = 0;
-    }
-
-    acc.lastFinishedMatchId = String(matchId);
-    saved.accounts[uid] = acc;
-    BOT_S.consecutiveWins = acc.consecutiveWins;
-    BOT_S.bestStreak = acc.bestStreak;
-
-    try {
-        localStorage.setItem(STORE_KEY, JSON.stringify(saved));
-    } catch (_) {}
-    renderPanel();
-}
-
-function resetAccountStreak() {
-    const uid = getUserId();
-    BOT_S.consecutiveWins = 0;
-    let saved = {};
-    try { saved = JSON.parse(localStorage.getItem(STORE_KEY) || "{}"); } catch (_) {}
-    if (!saved.accounts) saved.accounts = {};
-    if (!saved.accounts[uid]) saved.accounts[uid] = { consecutiveWins: 0, bestStreak: 0 };
-    saved.accounts[uid].consecutiveWins = 0;
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(saved)); } catch (_) {}
-    renderPanel();
-}
-
-function setStatus(newStatus) {
-    if (BOT_S.status !== newStatus) {
-        BOT_S.status = newStatus;
-        renderPanel();
-    }
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  TACTICAL LOCAL ENGINE (Zero Network Dependency - Sub-20ms Mate Scan)
-// ══════════════════════════════════════════════════════════════════════════════
-
-const PIECE_VALUES = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
-
-const PST_PAWN = [
-     0,  0,  0,  0,  0,  0,  0,  0,
-    50, 50, 50, 50, 50, 50, 50, 50,
-    10, 10, 20, 30, 30, 20, 10, 10,
-     5,  5, 10, 25, 25, 10,  5,  5,
-     0,  0,  0, 20, 20,  0,  0,  0,
-     5, -5,-10,  0,  0,-10, -5,  5,
-     5, 10, 10,-20,-20, 10, 10,  5,
-     0,  0,  0,  0,  0,  0,  0,  0
-];
-
-const PST_KNIGHT = [
-    -50,-40,-30,-30,-30,-30,-40,-50,
-    -40,-20,  0,  0,  0,  0,-20,-40,
-    -30,  0, 10, 15, 15, 10,  0,-30,
-    -30,  5, 15, 20, 20, 15,  5,-30,
-    -30,  0, 15, 20, 20, 15,  0,-30,
-    -30,  5, 10, 15, 15, 10,  5,-30,
-    -40,-20,  0,  5,  5,  0,-20,-40,
-    -50,-40,-30,-30,-30,-30,-40,-50
-];
-
-const PST_BISHOP = [
-    -20,-10,-10,-10,-10,-10,-10,-20,
-    -10,  0,  0,  0,  0,  0,  0,-10,
-    -10,  0,  5, 10, 10,  5,  0,-10,
-    -10,  5,  5, 10, 10,  5,  5,-10,
-    -10,  0, 10, 10, 10, 10,  0,-10,
-    -10, 10, 10, 10, 10, 10, 10,-10,
-    -10,  5,  0,  0,  0,  0,  5,-10,
-    -20,-10,-10,-10,-10,-10,-10,-20
-];
-
-const ALL_SQUARES = [
-    'a8','b8','c8','d8','e8','f8','g8','h8',
-    'a7','b7','c7','d7','e7','f7','g7','h7',
-    'a6','b6','c6','d6','e6','f6','g6','h6',
-    'a5','b5','c5','d5','e5','f5','g5','h5',
-    'a4','b4','c4','d4','e4','f4','g4','h4',
-    'a3','b3','c3','d3','e3','f3','g3','h3',
-    'a2','b2','c2','d2','e2','f2','g2','h2',
-    'a1','b1','c1','d1','e1','f1','g1','h1'
-];
-
-function evaluateBoard(chess) {
-    let score = 0;
-    for (let idx = 0; idx < 64; idx++) {
-        const p = chess.get(ALL_SQUARES[idx]);
-        if (!p) continue;
-        let val = PIECE_VALUES[p.type] || 0;
-        const r = Math.floor(idx / 8), c = idx % 8;
-        const tableIdx = p.color === 'w' ? idx : (7 - r) * 8 + c;
-
-        if (p.type === 'p') val += PST_PAWN[tableIdx];
-        else if (p.type === 'n') val += PST_KNIGHT[tableIdx];
-        else if (p.type === 'b') val += PST_BISHOP[tableIdx];
-
-        score += (p.color === 'w' ? val : -val);
-    }
-    return chess.turn() === 'w' ? score : -score;
-}
-
-function getTacticalBestMove(fen, maxDepth = 3) {
-    const chess = new Chess(fen);
-    const moves = chess.moves({ verbose: true });
-    if (!moves.length) return null;
-
-    // 1. Instant Checkmate Scanner (Mate in 1)
-    for (const m of moves) {
-        chess.move(m);
-        if (chess.in_checkmate()) {
-            return `${m.from}${m.to}${m.promotion || ''}`;
-        }
-        chess._undo_move();
-    }
-
-    // Sort moves: captures and promotions first
-    moves.sort((a, b) => {
-        const scoreA = (a.captured ? 100 : 0) + (a.promotion ? 80 : 0);
-        const scoreB = (b.captured ? 100 : 0) + (b.promotion ? 80 : 0);
-        return scoreB - scoreA;
-    });
-
-    function minimax(depth, alpha, beta) {
-        if (depth === 0) return evaluateBoard(chess);
-        const legal = chess.moves({ verbose: true });
-        if (legal.length === 0) {
-            if (chess.in_check()) return -100000 - depth;
-            return 0;
-        }
-
-        legal.sort((a, b) => (b.captured ? 10 : 0) - (a.captured ? 10 : 0));
-
-        let maxVal = -Infinity;
-        for (const m of legal) {
-            chess.move(m);
-            const score = -minimax(depth - 1, -beta, -alpha);
-            chess._undo_move();
-
-            if (score > maxVal) maxVal = score;
-            if (score > alpha) alpha = score;
-            if (alpha >= beta) break;
-        }
-        return maxVal;
-    }
-
-    let bestMove = moves[0];
-    let bestScore = -Infinity;
-    let alpha = -Infinity;
-    const beta = Infinity;
-
-    for (const m of moves) {
-        chess.move(m);
-        const score = -minimax(maxDepth - 1, -beta, -alpha);
-        chess._undo_move();
-
-        if (score > bestScore) {
-            bestScore = score;
-            bestMove = m;
-        }
-        if (score > alpha) alpha = score;
-    }
-
-    return `${bestMove.from}${bestMove.to}${bestMove.promotion || ''}`;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  MULTI-TIER ENGINE WITH GUARANTEED VALIDATION
-// ══════════════════════════════════════════════════════════════════════════════
-
-function gmHttpFetch(url, timeoutMs = 2500, opts = {}) {
-    return new Promise((resolve, reject) => {
-        const gmReq = (typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : (typeof GM !== "undefined" && GM.xmlHttpRequest ? GM.xmlHttpRequest : null));
-        const method = opts.method || "GET";
-        const data = opts.data || null;
-        const headers = { "Accept": "application/json", ...(opts.headers || {}) };
-
-        if (gmReq) {
-            try {
-                gmReq({
-                    method: method,
-                    url: url,
-                    data: data,
-                    timeout: timeoutMs,
-                    headers: headers,
-                    onload: (res) => {
-                        if (res.status >= 200 && res.status < 300) {
-                            try { resolve(JSON.parse(res.responseText)); }
-                            catch (e) { reject(e); }
-                        } else {
-                            reject(new Error(`HTTP ${res.status}`));
-                        }
-                    },
-                    onerror: (err) => reject(err),
-                    ontimeout: () => reject(new Error("Timeout"))
-                });
-                return;
-            } catch (_) {}
-        }
-
-        const controller = new AbortController();
-        const tid = setTimeout(() => controller.abort(), timeoutMs);
-        const fetchOpts = { method, headers, signal: controller.signal };
-        if (data) fetchOpts.body = data;
-
-        fetch(url, fetchOpts)
-            .then(r => {
-                clearTimeout(tid);
-                if (!r.ok) throw new Error(`HTTP ${r.status}`);
-                return r.json();
-            })
-            .then(resolve)
-            .catch(reject);
-    });
-}
-
-async function getLichessCloudMove(fen) {
-    try {
-        const encodedFen = encodeURIComponent(fen);
-        const data = await gmHttpFetch(`https://lichess.org/api/cloud-eval?fen=${encodedFen}&multiPv=1`, 1200);
-        if (data && Array.isArray(data.pvs) && data.pvs[0] && data.pvs[0].moves) {
-            return data.pvs[0].moves.split(/\s+/)[0];
-        }
-    } catch (_) {}
-    return null;
-}
-
-async function getFastStockfishMove(fen) {
-    try {
-        const encodedFen = encodeURIComponent(fen);
-        const depth = BOT_CFG.stockfishDepth || 15;
-        const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodedFen}&depth=${depth}&mode=bestmove`, 1500);
-        if (data && data.success && data.bestmove) {
-            return data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
-        }
-    } catch (_) {}
-    return null;
-}
-
-async function getChessApiMove(fen) {
-    try {
-        const data = await gmHttpFetch("https://chess-api.com/v1", 1500, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            data: JSON.stringify({ fen: fen, depth: 15 })
-        });
-        if (data) {
-            return data.move || (data.from && data.to ? (data.from + data.to + (data.promotion || "")) : null);
-        }
-    } catch (_) {}
-    return null;
-}
-
-/**
- * Multi-layer query that guarantees returning a verified legal move.
- */
-async function getBestMove(fen) {
-    // 1. Parallel Cloud Query (Lichess Cloud + Stockfish 16+ + Chess-API)
-    const lichessP = getLichessCloudMove(fen).then(mv => mv ? { name: "Lichess Cloud", move: mv } : null).catch(() => null);
-    const sfP = getFastStockfishMove(fen).then(mv => mv ? { name: "Stockfish 16+", move: mv } : null).catch(() => null);
-    const apiP = getChessApiMove(fen).then(mv => mv ? { name: "Stockfish 16+", move: mv } : null).catch(() => null);
-
-    // Fast resolution: Lichess Cloud
-    try {
-        const fastCloud = await Promise.race([
-            lichessP,
-            new Promise(r => setTimeout(() => r(null), 900))
-        ]);
-        if (fastCloud && fastCloud.move) {
-            const valid = normalizeAndValidateMove(fen, fastCloud.move);
-            if (valid) {
-                BOT_S.engineName = fastCloud.name;
-                return valid;
-            }
-        }
-    } catch (_) {}
-
-    // Wait for remaining engines
-    try {
-        const [cloudRes, sfRes, apiRes] = await Promise.all([lichessP, sfP, apiP]);
-        const candidates = [cloudRes, sfRes, apiRes].filter(Boolean);
-        for (const cand of candidates) {
-            if (cand && cand.move) {
-                const valid = normalizeAndValidateMove(fen, cand.move);
-                if (valid) {
-                    BOT_S.engineName = cand.name;
-                    return valid;
-                }
-            }
-        }
-    } catch (_) {}
-
-    // 2. Guaranteed Local Minimax Fallback (offline, instant, 100% legal)
-    const localMove = getTacticalBestMove(fen, 3);
-    const validLocal = normalizeAndValidateMove(fen, localMove);
-    if (validLocal) {
-        BOT_S.engineName = "Local GM";
-        return validLocal;
-    }
-
-    return null;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  CANVAS DISCOVERY & BOARD COORDINATES
-// ══════════════════════════════════════════════════════════════════════════════
-
-let _canvasCache = { el: null, t: 0 };
-
-function findCanvas() {
-    const now = Date.now();
-    if (_canvasCache.el && _canvasCache.el.isConnected && (now - _canvasCache.t) < 150) {
-        return _canvasCache.el;
-    }
-    const candidates = [...document.querySelectorAll("canvas")]
-        .filter(c => {
-            if (!c.isConnected) return false;
-            const r = c.getBoundingClientRect();
-            if (!(r.width > 140 && r.height > 140 && Math.abs(r.width / r.height - 1) < 0.4)) return false;
-            const cs = getComputedStyle(c);
-            if (cs.pointerEvents === "none") return false;
-            return true;
-        })
-        .sort((a, b) => {
-            const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-            return (rb.width * rb.height) - (ra.width * ra.height);
-        });
-    const picked = candidates[0] ?? null;
-    _canvasCache = { el: picked, t: now };
-    return picked;
-}
-
-async function waitCanvas(timeout = 6000) {
-    const t0 = Date.now();
-    while (Date.now() - t0 < timeout) {
-        const c = findCanvas();
-        if (c) return c;
-        await sleep(30);
-    }
-    return null;
-}
-
-/**
- * Computes exact viewport coordinates for a square.
- * In Duolingo Chess, the human player is ALWAYS at the bottom:
- * - If user is White: rank 1 is bottom, rank 8 is top (flipped = false).
- * - If user is Black: rank 8 is bottom, rank 1 is top (flipped = true).
- */
-function getSquareCoords(canvas, sq, insetRatio, flipped) {
-    const r = canvas.getBoundingClientRect();
-    const iw = r.width * insetRatio, ih = r.height * insetRatio;
-    const bw = r.width - (iw * 2),   bh = r.height - (ih * 2);
-    const file = sq.charCodeAt(0) - 97, rank = Number(sq[1]);
-    const col = flipped ? (7 - file) : file;
-    const row = flipped ? (rank - 1) : (8 - rank);
-    return {
-        x: r.left + iw + (col + 0.5) * (bw / 8),
-        y: r.top  + ih + (row + 0.5) * (bh / 8)
-    };
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  POINTER & TOUCH DISPATCH ENGINE
-// ══════════════════════════════════════════════════════════════════════════════
-
-function dispatchSyntheticPointer(type, el, x, y, buttons = 0, button = 0) {
-    if (!el) return;
-    const rx = Math.round(x), ry = Math.round(y);
-    const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 0, top: 0 };
-    const px = Math.round(x + (window.scrollX || 0));
-    const py = Math.round(y + (window.scrollY || 0));
-
-    const opts = {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        clientX: rx,
-        clientY: ry,
-        screenX: rx,
-        screenY: ry,
-        button: button,
-        buttons: buttons,
-        pressure: buttons ? 0.5 : 0,
-        pointerId: 1,
-        pointerType: IS_MOBILE ? "touch" : "mouse",
-        isPrimary: true,
-        width: 20,
-        height: 20
-    };
-
-    let pe;
-    try {
-        pe = (typeof PointerEvent === "function") ? new PointerEvent(type, opts) : new MouseEvent(type, opts);
-    } catch (_) {
-        try { pe = new MouseEvent(type, opts); } catch (_) {}
-    }
-
-    if (pe) {
-        try {
-            Object.defineProperty(pe, "offsetX", { value: rx - r.left, configurable: true });
-            Object.defineProperty(pe, "offsetY", { value: ry - r.top, configurable: true });
-            Object.defineProperty(pe, "pageX", { value: px, configurable: true });
-            Object.defineProperty(pe, "pageY", { value: py, configurable: true });
-        } catch (_) {}
-        try { el.dispatchEvent(pe); } catch (_) {}
-    }
-}
-
-async function dispatchTap(el, x, y, pressMs = 35) {
-    if (!el) return;
-    dispatchSyntheticPointer("pointerdown", el, x, y, 1, 0);
-    dispatchSyntheticPointer("mousedown", el, x, y, 1, 0);
-    if (pressMs > 0) await sleep(pressMs);
-    dispatchSyntheticPointer("pointerup", el, x, y, 0, 0);
-    dispatchSyntheticPointer("mouseup", el, x, y, 0, 0);
-    dispatchSyntheticPointer("click", el, x, y, 0, 0);
-}
-
-async function dispatchDrag(el, x1, y1, x2, y2) {
-    if (!el) return;
-    dispatchSyntheticPointer("pointerdown", el, x1, y1, 1, 0);
-    dispatchSyntheticPointer("mousedown", el, x1, y1, 1, 0);
-    await sleep(25);
-
-    const steps = 3;
-    for (let i = 1; i <= steps; i++) {
-        const xi = x1 + (x2 - x1) * (i / (steps + 1));
-        const yi = y1 + (y2 - y1) * (i / (steps + 1));
-        dispatchSyntheticPointer("pointermove", el, xi, yi, 1, 0);
-        dispatchSyntheticPointer("mousemove", el, xi, yi, 1, 0);
-        await sleep(20);
-    }
-
-    dispatchSyntheticPointer("pointermove", el, x2, y2, 1, 0);
-    dispatchSyntheticPointer("mousemove", el, x2, y2, 1, 0);
-    await sleep(25);
-
-    dispatchSyntheticPointer("pointerup", el, x2, y2, 0, 0);
-    dispatchSyntheticPointer("mouseup", el, x2, y2, 0, 0);
-    dispatchSyntheticPointer("click", el, x2, y2, 0, 0);
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  ROBUST MOVE EXECUTION & DESELECT RECOVERY
-// ══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Executes move cleanly on Duolingo's canvas board.
- * In Duolingo Chess:
- * - Kingside Castling: Move King from e1 -> g1 (White) or e8 -> g8 (Black).
- * - Queenside Castling: Move King from e1 -> c1 (White) or e8 -> c8 (Black).
- * Never click the Rook directly when executing a King move!
- */
-async function executeMove(uci, insetRatio, flipped) {
-    const fromSq = uci.slice(0, 2);
-    const toSq = uci.slice(2, 4);
-    const canvas = await waitCanvas();
-    if (!canvas) return false;
-
-    const pFrom = getSquareCoords(canvas, fromSq, insetRatio, flipped);
-    const pTo = getSquareCoords(canvas, toSq, insetRatio, flipped);
-
-    // 1. Primary Click Sequence: Tap Source -> Sleep -> Tap Destination
-    await dispatchTap(canvas, pFrom.x, pFrom.y, 35);
-    await sleep(BOT_CFG.clickDelay || 45);
-    await dispatchTap(canvas, pTo.x, pTo.y, 35);
-
-    await sleep(BOT_CFG.moveDelay || 120);
-
-    // 2. Secondary Drag Fallback: if board state hasn't moved
-    await dispatchDrag(canvas, pFrom.x, pFrom.y, pTo.x, pTo.y);
-
-    return true;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  MULTI-TIER PAWN PROMOTION HANDLER
-// ══════════════════════════════════════════════════════════════════════════════
-
-let _lastPromotionMove = null;
-
-function autoClickPromotionDOM() {
-    // Look for Queen button or dialog modal options
-    const queenSelectors = [
-        '[data-piece="queen"]', '[data-piece="q"]', '[data-piece="Q"]',
-        '[data-test*="queen" i]', '[data-test*="promotion-queen" i]',
-        'button[aria-label*="queen" i]', 'div[role="button"][aria-label*="queen" i]',
-        'img[alt*="queen" i]', 'img[src*="queen" i]', 'svg[data-piece*="queen" i]',
-        '[aria-label*="dame" i]', '[aria-label*="reina" i]'
-    ];
-
-    for (const sel of queenSelectors) {
-        const els = document.querySelectorAll(sel);
-        for (const el of els) {
-            if (isElementVisible(el) && !isForbiddenButton(el) && !el.closest("#dc-hud")) {
-                simulateFullClick(el);
-                return true;
-            }
-        }
-    }
-
-    // Generic promotion container search
-    try {
-        const containers = Array.from(document.querySelectorAll(
-            '[data-test*="promotion" i], [class*="promotion" i], div[role="dialog"]'
-        ));
-        for (const cont of containers) {
-            if (cont.closest("#dc-hud")) continue;
-            const items = Array.from(cont.querySelectorAll('button, [role="button"], img, svg, div[tabindex]'))
-                .filter(el => {
-                    if (el.closest("#dc-hud")) return false;
-                    const r = el.getBoundingClientRect();
-                    return r.width >= 16 && r.height >= 16 && r.width <= 140;
-                });
-            if (items.length > 0) {
-                simulateFullClick(items[0]);
-                return true;
-            }
-        }
-    } catch (_) {}
-
-    return false;
-}
-
-async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
-    _lastPromotionMove = destSq;
-    const canvas = findCanvas();
-
-    for (let attempt = 0; attempt < 8; attempt++) {
-        // Strategy 1: Check DOM promotion modal
-        if (autoClickPromotionDOM()) return true;
-
-        // Strategy 2: Click canvas promotion coordinates along the promotion file
-        if (canvas && destSq && destSq.length >= 2) {
-            const r = canvas.getBoundingClientRect();
-            const iw = r.width * insetRatio, ih = r.height * insetRatio;
-            const bw = r.width - (iw * 2),   bh = r.height - (ih * 2);
-            const file = destSq.charCodeAt(0) - 97;
-            const col = flipped ? (7 - file) : file;
-
-            // Target destination square itself
-            const pDest = getSquareCoords(canvas, destSq, insetRatio, flipped);
-            await dispatchTap(canvas, pDest.x, pDest.y, 30);
-
-            // Target vertical pieces on that file (e.g. ranks near edge)
-            const ranksToTry = flipped ? [0, 1, 2] : [7, 6, 5];
-            for (const rk of ranksToTry) {
-                const x = r.left + iw + (col + 0.5) * (bw / 8);
-                const y = r.top  + ih + (rk + 0.5) * (bh / 8);
-                await dispatchTap(canvas, x, y, 25);
-            }
-
-            // Strategy 3: Target center canvas modal coords if Duolingo centered the modal
-            await dispatchTap(canvas, r.left + r.width / 2, r.top + r.height * 0.45, 25);
-        }
-
-        // Strategy 4: Keyboard events ('q', '1', Enter, Space)
-        try {
-            for (const key of ["q", "1", "Enter", " "]) {
-                const code = key === " " ? "Space" : (key === "1" ? "Digit1" : "KeyQ");
-                const keyCode = key === " " ? 32 : (key === "1" ? 49 : 81);
-                const evOpts = { key, code, keyCode, which: keyCode, bubbles: true, cancelable: true, composed: true };
-                window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
-                document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
-            }
-        } catch (_) {}
-
-        await sleep(75);
-    }
-
-    return true;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  DOM INTERACTION & AUTO-MATCH
-// ══════════════════════════════════════════════════════════════════════════════
-
-function isElementVisible(el) {
-    if (!el || !el.isConnected || el.closest("#dc-hud")) return false;
-    const r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return false;
-    const cs = window.getComputedStyle(el);
-    return cs.display !== "none" && cs.visibility !== "hidden" && cs.opacity !== "0";
-}
-
-function isForbiddenButton(el) {
-    if (!el) return true;
-    const test = (el.getAttribute("data-test") || "").toLowerCase();
-    const aria = (el.getAttribute("aria-label") || "").toLowerCase();
-    return test === "quit-button" || test === "close-button" || aria === "quit" || aria === "close" || aria === "leave";
-}
-
-let _lastClickTime = 0;
-function simulateFullClick(el) {
-    if (!el || isForbiddenButton(el)) return false;
-    const now = Date.now();
-    if (now - _lastClickTime < 180) return false;
-    _lastClickTime = now;
-
-    try {
-        if (typeof el.focus === "function") el.focus();
-        if (typeof el.click === "function") el.click();
-
-        const rKey = Object.keys(el).find(k => k.startsWith("__reactProps$") || k.startsWith("__reactEventHandlers$") || k.startsWith("__reactFiber$"));
-        if (rKey && el[rKey]) {
-            const props = el[rKey].memoizedProps || el[rKey];
-            if (typeof props?.onClick === "function") {
-                try { props.onClick({ preventDefault: () => {}, stopPropagation: () => {}, target: el, currentTarget: el }); } catch (_) {}
-            }
-        }
-
-        const r = el.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0) {
-            dispatchTap(el, r.left + r.width / 2, r.top + r.height / 2, 20);
-        }
-        return true;
-    } catch (_) {
-        return false;
-    }
-}
-
-function autoMatchOscar() {
-    if (!BOT_CFG.autoMatch) return false;
-
-    // 1. Rematch / Play Again CTAs
-    const rematchSelectors = [
-        'button[data-test*="rematch" i]', 'button[data-test*="play-again" i]',
-        'button[data-test*="new-game" i]', 'a[data-test*="rematch" i]',
-        '[role="button"][data-test*="rematch" i]'
-    ];
-    for (const sel of rematchSelectors) {
-        const btn = document.querySelector(sel);
-        if (btn && isElementVisible(btn) && !isForbiddenButton(btn)) {
-            setStatus("matching");
-            simulateFullClick(btn);
-            return true;
-        }
-    }
-
-    // 2. Clear Post-Match Summary / Reward screens ("Continue", "Claim XP", "Done", "Next")
-    const advanceSelectors = [
-        '[data-test*="player-next" i]', '[data-test*="continue-button" i]',
-        '[data-test*="claim-button" i]', '[data-test*="session-end-button" i]',
-        '[data-test*="next-button" i]', '[data-test*="bottom-nav-next-button" i]'
-    ];
-    for (const sel of advanceSelectors) {
-        const btn = document.querySelector(sel);
-        if (btn && isElementVisible(btn) && !isForbiddenButton(btn)) {
-            simulateFullClick(btn);
-            return true;
-        }
-    }
-
-    // 3. Start Match / Play Oscar CTAs
-    const launchSelectors = [
-        'button[data-test*="start-match" i]', 'button[data-test*="start-button" i]',
-        'button[data-test*="play-button" i]', 'button[data-test*="player-start-button" i]',
-        '[data-test*="bot-oscar" i]', '[data-test*="character-oscar" i]'
-    ];
-    for (const sel of launchSelectors) {
-        const btn = document.querySelector(sel);
-        if (btn && isElementVisible(btn) && !isForbiddenButton(btn)) {
-            setStatus("matching");
-            simulateFullClick(btn);
-            return true;
-        }
-    }
-
-    // 4. Semantic Text Fallback
-    const candidates = Array.from(document.querySelectorAll('button, [role="button"], a'));
-    const kws = ["play against oscar", "play oscar", "start match", "play again", "rematch", "continue", "claim"];
-    for (const el of candidates) {
-        if (!isElementVisible(el) || isForbiddenButton(el)) continue;
-        const txt = (el.innerText || el.textContent || "").trim().toLowerCase();
-        for (const kw of kws) {
-            if (txt === kw || txt.includes(kw)) {
-                simulateFullClick(el);
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  NETWORK INTERCEPTION & MATCH STATE MANAGEMENT
-// ══════════════════════════════════════════════════════════════════════════════
-
-const MATCHES_RE = /\/chess\b.*\/matches(?:\/([^/?#]+))?/;
-const MOVES_RE   = /\/chess\b.*\/matches\/[^/?#]+\/moves/;
-const isMatchURL = url => typeof url === "string" && !MOVES_RE.test(url) && (MATCHES_RE.test(url) || /\/matches\b/i.test(url) || /\/chess-match\b/i.test(url));
-
-const _finishedMatchIds = new Set();
-let _turnMutex = false;
-let _lastTurnTimestamp = 0;
-
-function isBot(player) {
-    if (!player) return false;
-    if (player.bot || player.isBot) return true;
-    const name = String(player.name || player.username || "").toLowerCase();
-    return name.includes("oscar") || name.includes("bot") || name.includes("duo");
-}
-
-function isOurTurn(fen) {
-    if (!fen) return false;
-    const side = (fen.split(" ")[1] || "w").toLowerCase();
-    const color = (BOT_S.playerColor || "white").toLowerCase();
-    return (side === "w" && color === "white") || (side === "b" && color === "black");
-}
-
-function onMatchData(data) {
-    if (!data) return;
-    const match = data.match ?? (data.boardFen ? data : null) ?? (data.chessMatch ? data.chessMatch : null);
-    if (!match) return;
-
-    const uid = getUserId();
-
-    // Match Identification & Player Color Determination
-    if (match.id && BOT_S.matchId !== match.id) {
-        BOT_S.matchId = match.id;
-        loadAccountStats();
-
-        if (match.playerColor) {
-            BOT_S.playerColor = match.playerColor.toLowerCase();
-        } else if (match.whitePlayer && isBot(match.whitePlayer)) {
-            BOT_S.playerColor = "black";
-        } else if (match.blackPlayer && isBot(match.blackPlayer)) {
-            BOT_S.playerColor = "white";
-        } else if (match.whitePlayer && (String(match.whitePlayer.userId) === uid || String(match.whitePlayer.id) === uid)) {
-            BOT_S.playerColor = "white";
-        } else if (match.blackPlayer && (String(match.blackPlayer.userId) === uid || String(match.blackPlayer.id) === uid)) {
-            BOT_S.playerColor = "black";
-        } else {
-            BOT_S.playerColor = "white";
-        }
-    }
-
-    if (match.boardFen) {
-        BOT_S.currentFen = match.boardFen;
-    }
-
-    // Match Finish / Game Over Detection
-    if (match.endCondition || match.status === "finished") {
-        const mId = match.id || BOT_S.matchId;
-        if (mId && !_finishedMatchIds.has(String(mId))) {
-            _finishedMatchIds.add(String(mId));
-
-            const playerColor = (BOT_S.playerColor || "white").toLowerCase();
-            const winner = String(match.winner || match.winnerColor || "").toLowerCase();
-            const winnerUid = String(match.winnerUserId || "");
-            const isWin = (winner === playerColor) || (winnerUid === uid && uid !== "0");
-
-            recordMatchOutcome(mId, isWin);
-        }
-
-        BOT_S.matchId = null;
-        setStatus("idle");
-        if (BOT_CFG.autoMatch) {
-            setTimeout(autoMatchOscar, 300);
-            setTimeout(autoMatchOscar, 800);
-            setTimeout(autoMatchOscar, 1500);
-        }
-        return;
-    }
-
-    // Active Turn Check
-    if (match.status === "active" || match.status === "in_progress" || !match.status) {
-        if (isOurTurn(BOT_S.currentFen)) {
-            if (!_turnMutex && BOT_S.status !== "playing") {
-                setStatus("active");
-                if (BOT_CFG.autoPlay) setTimeout(takeTurn, BOT_CFG.thinkDelay);
-            }
-        } else {
-            if (BOT_S.status !== "thinking" && BOT_S.status !== "playing") {
-                setStatus("waiting");
-            }
-        }
-    }
-}
-
-async function takeTurn() {
-    if (_turnMutex) return;
-    if (!isOurTurn(BOT_S.currentFen)) return;
-
-    _turnMutex = true;
-    _lastTurnTimestamp = Date.now();
-    setStatus("thinking");
-
-    try {
-        const startFen = BOT_S.currentFen;
-        const move = await getBestMove(startFen);
-
-        if (!move || startFen !== BOT_S.currentFen) {
-            setStatus("idle");
-            return;
-        }
-
-        setStatus("playing");
-        BOT_S.lastMove = `${move.slice(0, 2)} → ${move.slice(2, 4)}${move[4] ? ' (' + move[4].toUpperCase() + ')' : ''}`;
-
-        const flip = (BOT_S.playerColor === "black");
-        const isPromotion = (move.length >= 5) || (move[4] === "q") || (move[4] === "Q");
-
-        // Execute verified legal move
-        await executeMove(move, BOT_CFG.boardInsetRatio, flip);
-
-        // Handle promotion popup if applicable
-        if (isPromotion) {
-            await handlePromotion(move.slice(2, 4), move[4] || "q", BOT_CFG.boardInsetRatio, flip);
-        }
-
-        setStatus("waiting");
-    } catch (_) {
-        setStatus("idle");
-    } finally {
-        _turnMutex = false;
-        renderPanel();
-    }
-}
-
 function hookNetwork(targetWin) {
     if (!targetWin || targetWin.__dcHooked) return;
     try { targetWin.__dcHooked = true; } catch (_) {}
@@ -1572,18 +1703,22 @@ function hookNetwork(targetWin) {
             const res = await origFetch.apply(this, args);
             try {
                 const url = typeof args[0] === "string" ? args[0] : (args[0]?.url ?? res.url ?? "");
+                if (MOVES_RE.test(url)) {
+                    _lastMoveSentTime = Date.now();
+                }
                 if (args[1]?.headers) {
                     const h = args[1].headers;
                     const tok = typeof h?.get === "function" ? h.get("authorization") : (h?.["authorization"] || h?.["Authorization"]);
                     if (tok) BOT_S.authToken = tok;
                 }
                 const uidMatch = url.match(/\/chess\/\d+\/(\d+)\//);
-                if (uidMatch && uidMatch[1]) {
-                    BOT_S.userId = uidMatch[1];
-                    loadAccountStats();
-                }
+                if (uidMatch && uidMatch[1]) BOT_S.userId = uidMatch[1];
+
                 if (isMatchURL(url)) {
                     res.clone().json().then(onMatchData).catch(() => {});
+                } else if (isSessionURL(url)) {
+                    _lastSessionUrl = url;
+                    res.clone().json().then(processSession).catch(() => {});
                 }
             } catch (_) {}
             return res;
@@ -1600,16 +1735,17 @@ function hookNetwork(targetWin) {
         };
         proto.send = function(...args) {
             const url = this.__dcUrl;
-            if (isMatchURL(url)) {
+            if (MOVES_RE.test(url)) {
+                _lastMoveSentTime = Date.now();
+            }
+            if (isMatchURL(url) || isSessionURL(url)) {
                 this.addEventListener("load", () => {
                     try {
                         const d = this.responseType === "json" ? this.response : JSON.parse(this.responseText);
                         const uidMatch = url.match(/\/chess\/\d+\/(\d+)\//);
-                        if (uidMatch && uidMatch[1]) {
-                            BOT_S.userId = uidMatch[1];
-                            loadAccountStats();
-                        }
-                        onMatchData(d);
+                        if (uidMatch && uidMatch[1]) BOT_S.userId = uidMatch[1];
+                        if (isMatchURL(url)) onMatchData(d);
+                        if (isSessionURL(url)) { _lastSessionUrl = url; processSession(d); }
                     } catch (_) {}
                 });
             }
@@ -1623,248 +1759,202 @@ if (typeof unsafeWindow !== "undefined" && unsafeWindow !== window) {
     hookNetwork(unsafeWindow);
 }
 
+async function _fetchSession() {
+    let sessionUrl = _lastSessionUrl;
+    if (!sessionUrl) {
+        try {
+            const SESSION_RE = /\/sessions(?:[/?#&]|$)/i;
+            const hit = performance.getEntriesByType("resource").find(e => SESSION_RE.test(e.name));
+            if (hit) sessionUrl = hit.name;
+        } catch (_) {}
+    }
+    if (sessionUrl) {
+        try {
+            const hdrs = {};
+            if (BOT_S.authToken) hdrs["Authorization"] = BOT_S.authToken;
+            const fetchFn = (typeof unsafeWindow !== "undefined" && unsafeWindow.fetch) || window.fetch;
+            const r = await fetchFn(sessionUrl, { method: "GET", headers: hdrs, credentials: "include" });
+            if (r.ok) {
+                const data = await r.json();
+                processSession(data);
+                return true;
+            }
+        } catch (_) {}
+    }
+    return false;
+}
+
+async function _fetchMatchState() {
+    const uid = getUserId();
+    const hdrs = {};
+    if (BOT_S.authToken) hdrs["Authorization"] = BOT_S.authToken;
+
+    const urlsToTry = [];
+    if (BOT_S.matchId) {
+        urlsToTry.push(`/chess/1/${uid}/matches/${BOT_S.matchId}`);
+        urlsToTry.push(`/chess/matches/${BOT_S.matchId}`);
+    }
+    if (uid && uid !== "0") {
+        urlsToTry.push(`/chess/1/${uid}/matches`);
+    }
+
+    for (const u of urlsToTry) {
+        try {
+            const fetchFn = (typeof unsafeWindow !== "undefined" && unsafeWindow.fetch) || window.fetch;
+            const res = await fetchFn(u, { method: "GET", headers: hdrs, credentials: "include" });
+            if (res.ok) {
+                const data = await res.json();
+                onMatchData(data);
+                if (BOT_S.matchId) return true;
+            }
+        } catch (_) {}
+    }
+    return false;
+}
+
 async function recoverState() {
     try {
-        const uid = getUserId();
-        const hdrs = {};
-        if (BOT_S.authToken) hdrs["Authorization"] = BOT_S.authToken;
-
-        const urls = [];
-        if (BOT_S.matchId) {
-            urls.push(`/chess/1/${uid}/matches/${BOT_S.matchId}`);
-            urls.push(`/chess/matches/${BOT_S.matchId}`);
+        const entries = performance.getEntriesByType("resource");
+        for (const e of entries) {
+            const matchHit = e.name.match(/\/chess\/\d+\/(\d+)\/matches\/([^/?#]+)/);
+            if (matchHit && matchHit[2] && !e.name.includes('/moves')) {
+                const mId = matchHit[2];
+                if (_finishedMatchIds.has(String(mId))) continue;
+                BOT_S.userId = matchHit[1];
+                BOT_S.matchId = mId;
+                await _fetchMatchState();
+                return;
+            }
+            const matchHit2 = e.name.match(/\/matches\/([^/?#]+)/);
+            if (matchHit2 && matchHit2[1] && !e.name.includes('/moves')) {
+                const mId = matchHit2[1];
+                if (_finishedMatchIds.has(String(mId))) continue;
+                BOT_S.matchId = mId;
+                await _fetchMatchState();
+                return;
+            }
         }
-        if (uid && uid !== "0") {
-            urls.push(`/chess/1/${uid}/matches`);
+
+        const canvas = findCanvas();
+        if (canvas || location.pathname.includes("chess")) {
+            await _fetchMatchState();
         }
 
-        for (const u of urls) {
-            try {
-                const fetchFn = (typeof unsafeWindow !== "undefined" && unsafeWindow.fetch) || window.fetch;
-                const res = await fetchFn(u, { method: "GET", headers: hdrs, credentials: "include" });
-                if (res.ok) {
-                    const data = await res.json();
-                    onMatchData(data);
-                    if (BOT_S.matchId) return;
-                }
-            } catch (_) {}
+        if (!location.pathname.includes("chess")) {
+            await _fetchSession();
         }
     } catch (_) {}
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  LOGICAL, CLEAN HUD (Zero Emojis, Pure SVGs & Refined Typography)
+//  SVG DEVICE ICONS & DRAGGABLE HUD (ZERO EMOJIS)
 // ══════════════════════════════════════════════════════════════════════════════
 
-let _hud = null;
+let _panel = null;
 
-const HUD_STYLE = `
-#dc-hud {
-    position: fixed;
-    bottom: 24px;
-    right: 24px;
-    width: 250px;
-    background: rgba(15, 23, 42, 0.96);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 12px;
-    padding: 12px 14px;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    color: #f8fafc;
-    z-index: 2147483647;
-    user-select: none;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    box-sizing: border-box;
-    backdrop-filter: blur(10px);
+const STYLE = `
+#dc-pill{
+    position:fixed;bottom:20px;right:20px;
+    background:rgba(15,23,42,0.96);border:1px solid rgba(148,163,184,0.3);
+    border-radius:12px;padding:12px 16px;
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color:#f8fafc;z-index:2147483647;user-select:none;
+    box-shadow:0 8px 32px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.06);
+    display:flex;flex-direction:column;gap:8px;
+    min-width:280px;max-width:320px;cursor:grab;touch-action:none;
+    font-size:13px;box-sizing:border-box;
 }
-#dc-hud.dragging { opacity: 0.9; }
-.dc-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    cursor: grab;
-    padding-bottom: 6px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+#dc-pill.dragging{cursor:grabbing;opacity:0.92;}
+.dc-row{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.dc-title{font-weight:900;color:#58cc02;font-size:14px;letter-spacing:0.8px;}
+.dc-status{
+    font-size:11px;font-weight:800;padding:3px 8px;border-radius:5px;
+    background:#334155;color:#94a3b8;text-transform:uppercase;letter-spacing:0.4px;
 }
-.dc-header:active { cursor: grabbing; }
-.dc-brand {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    font-weight: 800;
-    letter-spacing: 0.8px;
-    color: #f8fafc;
+.dc-status.active{background:#16a34a;color:#fff;}
+.dc-status.thinking{background:#d97706;color:#fff;}
+.dc-status.matching{background:#2563eb;color:#fff;}
+.dc-info{
+    font-size:12px;color:#94a3b8;border-top:1px solid rgba(51,65,85,0.7);padding-top:7px;
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
 }
-.dc-icon-chess {
-    width: 14px;
-    height: 14px;
-    fill: #58cc02;
+.dc-engine{color:#38bdf8;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;}
+.dc-move{color:#facc15;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;font-weight:800;font-size:13px;}
+.dc-btn-grid{
+    display:grid;grid-template-columns:1fr 1fr;gap:8px;
+    border-top:1px solid rgba(51,65,85,0.7);padding-top:7px;
 }
-.dc-status {
-    font-size: 9px;
-    font-weight: 800;
-    padding: 2px 7px;
-    border-radius: 4px;
-    background: #334155;
-    color: #94a3b8;
-    letter-spacing: 0.4px;
+.dc-btn{
+    background:#58cc02;color:#052e16;border:none;border-radius:7px;
+    padding:8px 10px;font-size:11.5px;font-weight:800;cursor:pointer;
+    line-height:1.25;text-align:center;transition:background 0.15s ease, filter 0.15s ease;
+    white-space:nowrap;user-select:none;
 }
-.dc-status.active { background: #15803d; color: #fff; }
-.dc-status.thinking { background: #d97706; color: #fff; }
-.dc-status.matching { background: #2563eb; color: #fff; }
-.dc-grid-info {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px;
-    background: rgba(30, 41, 59, 0.5);
-    border-radius: 6px;
-    padding: 6px 8px;
-}
-.dc-field { display: flex; flex-direction: column; gap: 2px; }
-.dc-field-label { font-size: 8.5px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; }
-.dc-field-val {
-    font-size: 10.5px;
-    font-weight: 700;
-    color: #38bdf8;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.dc-field-val.move { color: #facc15; font-family: monospace; font-weight: 800; }
-.dc-streak-box {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: rgba(30, 41, 59, 0.3);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 6px;
-    padding: 6px 8px;
-}
-.dc-streak-text { display: flex; align-items: baseline; gap: 5px; font-size: 10px; font-weight: 700; }
-.dc-streak-label { color: #94a3b8; }
-.dc-streak-num { color: #58cc02; font-size: 13px; font-weight: 900; }
-.dc-streak-best { color: #64748b; font-size: 9px; }
-.dc-btn-reset {
-    background: transparent;
-    border: 1px solid rgba(148, 163, 184, 0.25);
-    color: #94a3b8;
-    border-radius: 4px;
-    padding: 2px 6px;
-    font-size: 9px;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all 0.15s ease;
-}
-.dc-btn-reset:hover { background: #334155; color: #fff; border-color: rgba(148, 163, 184, 0.4); }
-.dc-btn-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px;
-}
-.dc-toggle {
-    background: #58cc02;
-    color: #000;
-    border: none;
-    border-radius: 6px;
-    padding: 6px 4px;
-    font-size: 9.5px;
-    font-weight: 800;
-    cursor: pointer;
-    text-align: center;
-    line-height: 1.2;
-    transition: filter 0.15s ease, background 0.15s ease;
-}
-.dc-toggle.off { background: #334155; color: #94a3b8; }
-.dc-toggle:hover { filter: brightness(1.08); }
+.dc-btn.off{background:#334155;color:#94a3b8;}
+.dc-btn:hover{filter:brightness(1.1);}
+.dc-btn:active{filter:brightness(0.92);}
 `;
 
-const SVG_CHESS = `<svg class="dc-icon-chess" viewBox="0 0 24 24"><path d="M19 22H5v-2h14v2zm-2-4H7l1-6.5c-1.5-.7-2.3-2.1-2-3.8.3-1.6 1.7-2.7 3.3-2.7h1.4c.5-1.2 1.7-2 3.1-2h.2c1.4 0 2.6.8 3.1 2H19c.6 0 1 .4 1 1v1.5c0 1.9-1.2 3.5-3 4V18z"/></svg>`;
-
 function injectCSS() {
-    if (document.getElementById("dc-hud-style")) return;
+    if (document.getElementById("dc-style")) return;
     const s = document.createElement("style");
-    s.id = "dc-hud-style";
-    s.textContent = HUD_STYLE;
+    s.id = "dc-style";
+    s.textContent = STYLE;
     document.head.appendChild(s);
 }
 
-function createHUD() {
+function createPanel() {
     injectCSS();
-    if (_hud) { _hud.remove(); _hud = null; }
+    if (_panel) { _panel.remove(); _panel = null; }
 
-    _hud = document.createElement("div");
-    _hud.id = "dc-hud";
+    _panel = document.createElement("div");
+    _panel.id = "dc-pill";
 
-    _hud.innerHTML = `
-    <div class="dc-header" id="dc-drag-handle">
-        <div class="dc-brand">
-            ${SVG_CHESS}
-            <span>DUOLINGO CHESS</span>
-        </div>
-        <span class="dc-status" id="dc-status-badge">${esc(BOT_S.status.toUpperCase())}</span>
+    _panel.innerHTML = `
+    <div class="dc-row">
+        <span class="dc-title">DUOCHESS</span>
+        <span class="dc-status" id="dc-st">${esc(BOT_S.status)}</span>
     </div>
-    <div class="dc-grid-info">
-        <div class="dc-field">
-            <span class="dc-field-label">ENGINE</span>
-            <span class="dc-field-val" id="dc-engine-val">${esc(BOT_S.engineName)}</span>
-        </div>
-        <div class="dc-field">
-            <span class="dc-field-label">LAST MOVE</span>
-            <span class="dc-field-val move" id="dc-move-val">${esc(BOT_S.lastMove || "-")}</span>
-        </div>
-    </div>
-    <div class="dc-streak-box">
-        <div class="dc-streak-text">
-            <span class="dc-streak-label">STREAK:</span>
-            <span class="dc-streak-num" id="dc-streak-num">${BOT_S.consecutiveWins}</span>
-            <span class="dc-streak-best" id="dc-streak-best">(Best: ${BOT_S.bestStreak})</span>
-        </div>
-        <button id="dc-btn-rst" class="dc-btn-reset" title="Reset consecutive win streak">Reset</button>
+    <div class="dc-info">
+        <span class="dc-engine" id="dc-eng">${esc(BOT_S.engineName || "Stockfish 16+")}</span>
+        <span class="dc-move" id="dc-mv">${esc(BOT_S.lastMove || "-")}</span>
     </div>
     <div class="dc-btn-grid">
-        <button id="dc-btn-play" class="dc-toggle ${BOT_CFG.autoPlay ? '' : 'off'}">${BOT_CFG.autoPlay ? 'AUTO PLAY: ON' : 'AUTO PLAY: OFF'}</button>
-        <button id="dc-btn-match" class="dc-toggle ${BOT_CFG.autoMatch ? '' : 'off'}">${BOT_CFG.autoMatch ? 'AUTO MATCH: ON' : 'AUTO MATCH: OFF'}</button>
+        <button id="dc-tg-play" class="dc-btn ${BOT_CFG.autoPlay ? '' : 'off'}">${BOT_CFG.autoPlay ? 'AUTO PLAY: ON' : 'AUTO PLAY: OFF'}</button>
+        <button id="dc-tg-match" class="dc-btn ${BOT_CFG.autoMatch ? '' : 'off'}">${BOT_CFG.autoMatch ? 'AUTO MATCH: ON' : 'AUTO MATCH: OFF'}</button>
     </div>`;
 
-    document.body.appendChild(_hud);
+    document.body.appendChild(_panel);
 
-    // Event listeners
-    const btnPlay = _hud.querySelector("#dc-btn-play");
-    if (btnPlay) {
-        btnPlay.addEventListener("click", (e) => {
+    const tgPlay = _panel.querySelector("#dc-tg-play");
+    if (tgPlay) {
+        tgPlay.addEventListener("pointerdown", (e) => e.stopPropagation());
+        tgPlay.addEventListener("touchstart", (e) => e.stopPropagation());
+        tgPlay.addEventListener("click", (e) => {
             e.stopPropagation();
             BOT_CFG.autoPlay = !BOT_CFG.autoPlay;
-            saveAccountStats();
+            saveSettings();
             renderPanel();
         });
     }
 
-    const btnMatch = _hud.querySelector("#dc-btn-match");
-    if (btnMatch) {
-        btnMatch.addEventListener("click", (e) => {
+    const tgMatch = _panel.querySelector("#dc-tg-match");
+    if (tgMatch) {
+        tgMatch.addEventListener("pointerdown", (e) => e.stopPropagation());
+        tgMatch.addEventListener("touchstart", (e) => e.stopPropagation());
+        tgMatch.addEventListener("click", (e) => {
             e.stopPropagation();
             BOT_CFG.autoMatch = !BOT_CFG.autoMatch;
-            saveAccountStats();
+            saveSettings();
             renderPanel();
         });
     }
 
-    const btnRst = _hud.querySelector("#dc-btn-rst");
-    if (btnRst) {
-        btnRst.addEventListener("click", (e) => {
-            e.stopPropagation();
-            resetAccountStreak();
-        });
-    }
-
-    makeDraggable(_hud, _hud.querySelector("#dc-drag-handle"));
+    makeDraggable(_panel);
     renderPanel();
 }
 
-function makeDraggable(el, handle) {
+function makeDraggable(el) {
     let isDragging = false;
     let startX = 0, startY = 0;
     let initialLeft = 0, initialTop = 0;
@@ -1887,8 +1977,8 @@ function makeDraggable(el, handle) {
     try {
         const saved = JSON.parse(localStorage.getItem(STORE_KEY + "_pos") || "null");
         if (saved && typeof saved.left === "number" && typeof saved.top === "number") {
-            const maxL = Math.max(10, window.innerWidth - 260);
-            const maxT = Math.max(10, window.innerHeight - 150);
+            const maxL = Math.max(10, window.innerWidth - 240);
+            const maxT = Math.max(10, window.innerHeight - 90);
             el.style.left = Math.min(maxL, Math.max(10, saved.left)) + "px";
             el.style.top = Math.min(maxT, Math.max(10, saved.top)) + "px";
             el.style.bottom = "auto";
@@ -1896,16 +1986,22 @@ function makeDraggable(el, handle) {
         }
     } catch (_) {}
 
-    function onStart(e) {
-        const pt = e.touches ? e.touches[0] : e;
+    function initPos() {
         const rect = el.getBoundingClientRect();
         el.style.left = rect.left + "px";
         el.style.top = rect.top + "px";
         el.style.bottom = "auto";
         el.style.right = "auto";
+    }
+
+    function onStart(e) {
+        if (e.target.tagName === "BUTTON" || e.target.closest("button")) return;
+        initPos();
         isDragging = true;
+        const pt = e.touches ? e.touches[0] : e;
         startX = pt.clientX;
         startY = pt.clientY;
+        const rect = el.getBoundingClientRect();
         initialLeft = rect.left;
         initialTop = rect.top;
         el.classList.add("dragging");
@@ -1918,8 +2014,10 @@ function makeDraggable(el, handle) {
         const dy = pt.clientY - startY;
         const maxLeft = Math.max(10, window.innerWidth - el.offsetWidth - 10);
         const maxTop = Math.max(10, window.innerHeight - el.offsetHeight - 10);
-        el.style.left = Math.min(maxLeft, Math.max(10, initialLeft + dx)) + "px";
-        el.style.top = Math.min(maxTop, Math.max(10, initialTop + dy)) + "px";
+        const nextLeft = Math.min(maxLeft, Math.max(10, initialLeft + dx));
+        const nextTop = Math.min(maxTop, Math.max(10, initialTop + dy));
+        el.style.left = nextLeft + "px";
+        el.style.top = nextTop + "px";
         if (e.cancelable) e.preventDefault();
     }
 
@@ -1933,104 +2031,127 @@ function makeDraggable(el, handle) {
         } catch (_) {}
     }
 
-    handle.addEventListener("pointerdown", onStart);
+    el.addEventListener("pointerdown", onStart);
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onEnd);
     window.addEventListener("pointercancel", onEnd);
+
+    el.addEventListener("touchstart", onStart, { passive: true });
+    window.addEventListener("touchmove", onMove, { passive: false });
+    window.addEventListener("touchend", onEnd, { passive: true });
+    window.addEventListener("touchcancel", onEnd, { passive: true });
 }
 
 function renderPanel() {
-    if (!_hud) return;
-    const st = _hud.querySelector("#dc-status-badge");
-    const eng = _hud.querySelector("#dc-engine-val");
-    const mv = _hud.querySelector("#dc-move-val");
-    const strk = _hud.querySelector("#dc-streak-num");
-    const best = _hud.querySelector("#dc-streak-best");
-    const btnPlay = _hud.querySelector("#dc-btn-play");
-    const btnMatch = _hud.querySelector("#dc-btn-match");
+    if (!_panel) return;
+    const st = _panel.querySelector("#dc-st");
+    const eng = _panel.querySelector("#dc-eng");
+    const mv = _panel.querySelector("#dc-mv");
+    const tgPlay = _panel.querySelector("#dc-tg-play");
+    const tgMatch = _panel.querySelector("#dc-tg-match");
 
     if (st) {
         st.textContent = BOT_S.status.toUpperCase();
-        st.className = `dc-status ${BOT_S.status === 'playing' || BOT_S.status === 'active' ? 'active' : BOT_S.status === 'thinking' ? 'thinking' : BOT_S.status === 'matching' ? 'matching' : ''}`;
+        const isAct = BOT_S.status === "playing" || BOT_S.status === "our_turn";
+        const isMatch = BOT_S.status === "matching";
+        st.className = `dc-status ${isAct ? 'active' : BOT_S.status === 'thinking' ? 'thinking' : isMatch ? 'matching' : ''}`;
     }
-    if (eng) eng.textContent = BOT_S.engineName || "Local GM";
+    if (eng) eng.textContent = BOT_S.engineName || "Stockfish 16+";
     if (mv) mv.textContent = BOT_S.lastMove || "-";
-    if (strk) strk.textContent = BOT_S.consecutiveWins;
-    if (best) best.textContent = `(Best: ${BOT_S.bestStreak})`;
-
-    if (btnPlay) {
-        btnPlay.textContent = BOT_CFG.autoPlay ? "AUTO PLAY: ON" : "AUTO PLAY: OFF";
-        btnPlay.className = `dc-toggle ${BOT_CFG.autoPlay ? '' : 'off'}`;
+    if (tgPlay) {
+        tgPlay.textContent = BOT_CFG.autoPlay ? "AUTO PLAY: ON" : "AUTO PLAY: OFF";
+        tgPlay.className = `dc-btn ${BOT_CFG.autoPlay ? '' : 'off'}`;
     }
-    if (btnMatch) {
-        btnMatch.textContent = BOT_CFG.autoMatch ? "AUTO MATCH: ON" : "AUTO MATCH: OFF";
-        btnMatch.className = `dc-toggle ${BOT_CFG.autoMatch ? '' : 'off'}`;
+    if (tgMatch) {
+        tgMatch.textContent = BOT_CFG.autoMatch ? "AUTO MATCH: ON" : "AUTO MATCH: OFF";
+        tgMatch.className = `dc-btn ${BOT_CFG.autoMatch ? '' : 'off'}`;
     }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  GLITCH-PROOF CONCURRENCY WATCHDOG & MAIN LOOP
+//  AUTO-PLAY & ACTIVE WATCHDOG LOOP
 // ══════════════════════════════════════════════════════════════════════════════
 
-let _loopRunning = false;
+let _pollRunning = false;
 
-async function _mainLoop() {
-    if (_loopRunning) return;
-    _loopRunning = true;
+async function _autoPollLoop() {
+    if (_pollRunning) return;
+    _pollRunning = true;
+
+    const POLL_MS = 25;
 
     while (true) {
-        await sleep(150);
+        await sleep(POLL_MS);
 
-        // Watchdog 1: Release stuck mutex if turn execution hung > 4.5s
-        if (_turnMutex && (Date.now() - _lastTurnTimestamp > 4500)) {
-            _turnMutex = false;
+        // Watchdog 1: Clear stuck thinking/playing if hung > 2.0s
+        if ((BOT_S.status === "thinking" || BOT_S.status === "playing" || BOT_S.turnInProgress) && (Date.now() - _lastStateChange > 2000)) {
+            BOT_S.turnInProgress = false;
             setStatus("idle");
         }
 
-        // Auto-match / Rematch advance if game over
-        if (BOT_CFG.autoMatch && !BOT_S.matchId && BOT_S.status !== "playing" && BOT_S.status !== "thinking") {
-            autoMatchOscar();
+        // Watchdog 2: Single turn trigger with rapid retry cooldown (never permanently freeze)
+        if (BOT_CFG.autoPlay && isOurTurn(BOT_S.currentFen) && !BOT_S.turnInProgress && BOT_S.status !== "playing" && BOT_S.status !== "thinking") {
+            const isSameFen = (BOT_S.currentFen === _lastAttemptedFen);
+            const cooldown = isSameFen ? 350 : 80;
+            if (Date.now() - _lastMoveAttemptTime > cooldown) {
+                setStatus("our_turn");
+                takeTurn();
+            }
+        }
+
+        if (!BOT_CFG.autoPlay && !BOT_CFG.autoMatch) continue;
+
+        // Auto promote only if promotion modal is actually active
+        if (_pendingPromotionSq) {
+            autoClickPromotion();
+        }
+
+        if (BOT_S.status !== "playing" && BOT_S.status !== "thinking" && !BOT_S.turnInProgress) {
+            if (BOT_CFG.autoMatch) {
+                autoMatchOscar();
+            } else if (BOT_CFG.autoPlay) {
+                advanceFlow();
+            }
         }
 
         const canvas = findCanvas();
         if (canvas) {
-            if (!BOT_S.matchId) {
+            if (!BOT_S.matchId && !SOL_STATE.challenges.length) {
                 await recoverState();
             }
 
-            // Watchdog 2: If it's our turn and idle/waiting with no move attempted for > 1.2s, trigger turn
-            if (BOT_CFG.autoPlay && isOurTurn(BOT_S.currentFen) && !_turnMutex && BOT_S.status !== "playing" && BOT_S.status !== "thinking") {
-                if (Date.now() - _lastTurnTimestamp > 1200) {
-                    setStatus("active");
-                    takeTurn();
+            if (BOT_S.matchId) {
+                if (BOT_S.status === "waiting" || BOT_S.status === "idle") {
+                    if (Date.now() - _lastFetchTime > 600) {
+                        _lastFetchTime = Date.now();
+                        await _fetchMatchState();
+                    }
                 }
+            } else if (SOL_STATE.challenges.length && !SOL_STATE.solving) {
+                solveAll();
             }
         }
     }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  BOOTSTRAP
+//  BOOT
 // ══════════════════════════════════════════════════════════════════════════════
 
 function _boot() {
-    loadAccountStats();
-    _mainLoop();
+    _autoPollLoop();
     if (document.body) {
-        createHUD();
+        createPanel();
         recoverState();
     } else {
         document.addEventListener("DOMContentLoaded", () => {
-            createHUD();
+            createPanel();
             recoverState();
         });
     }
 }
 
-if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", _boot);
-} else {
-    _boot();
-}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", _boot);
+else _boot();
 
 })();
