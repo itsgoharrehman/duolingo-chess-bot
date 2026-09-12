@@ -1289,24 +1289,7 @@ function simulateFullClick(el) {
     }
 }
 
-let _lastAdvanceKeyTime = 0;
-function pressGlobalAdvanceKeys() {
-    const now = Date.now();
-    if (now - _lastAdvanceKeyTime < 450) return;
-    _lastAdvanceKeyTime = now;
-
-    try {
-        for (const key of ["Enter", " "]) {
-            const code = key === " " ? "Space" : "Enter";
-            const keyCode = key === " " ? 32 : 13;
-            const evOpts = { key, code, keyCode, which: keyCode, bubbles: true, cancelable: true, composed: true };
-            window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
-            document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
-            window.dispatchEvent(new KeyboardEvent("keyup", evOpts));
-            document.dispatchEvent(new KeyboardEvent("keyup", evOpts));
-        }
-    } catch (_) {}
-}
+let _lastAutoMatchTime = 0;
 
 function autoMatchOscar() {
     if (!BOT_CFG.autoMatch) return false;
@@ -1408,8 +1391,6 @@ function autoMatchOscar() {
         }
     }
 
-    // 7. Fallback to global space/enter key if end-screen banner is active
-    pressGlobalAdvanceKeys();
     return false;
 }
 
@@ -2126,8 +2107,9 @@ async function _autoPollLoop() {
         }
 
         if (BOT_S.status !== "playing" && BOT_S.status !== "thinking" && !BOT_S.turnInProgress) {
-            // Throttle auto-match/flow to at most once per 1500ms to prevent DOM spam
-            if (Date.now() - _lastMoveAttemptTime > 1500) {
+            // Throttle auto-match/flow to at most once per 2000ms to prevent DOM spam and extension conflicts
+            if (Date.now() - _lastAutoMatchTime > 2000) {
+                _lastAutoMatchTime = Date.now();
                 if (BOT_CFG.autoMatch) {
                     autoMatchOscar();
                 } else if (BOT_CFG.autoPlay) {
