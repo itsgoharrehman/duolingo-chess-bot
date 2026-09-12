@@ -32,8 +32,8 @@ const DEVICE_TYPE = "desktop";
 const BOT_CFG = {
     engine:          "hybrid", // Embedded + Stockfish Fallback
     stockfishDepth:  15,
-    clickDelay:      50,
-    moveDelay:       60,
+    clickDelay:      70,
+    moveDelay:       70,
     thinkDelay:      10,
     boardInsetRatio: 64 / 648,
     flipped:         false,
@@ -43,8 +43,8 @@ const BOT_CFG = {
 
 const SOL_CFG = {
     boardInsetRatio: 64 / 648,
-    clickDelay:      50,
-    moveDelay:       60,
+    clickDelay:      70,
+    moveDelay:       70,
     enemyDelay:      180,
     continueDelay:   60,
     autoContinue:    true,
@@ -58,6 +58,10 @@ function loadSettings() {
         const saved = JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
         if (saved.bot) Object.assign(BOT_CFG, saved.bot);
         if (saved.solver) Object.assign(SOL_CFG, saved.solver);
+        if (BOT_CFG.clickDelay < 60) BOT_CFG.clickDelay = 70;
+        if (BOT_CFG.moveDelay < 60) BOT_CFG.moveDelay = 70;
+        if (SOL_CFG.clickDelay < 60) SOL_CFG.clickDelay = 70;
+        if (SOL_CFG.moveDelay < 60) SOL_CFG.moveDelay = 70;
     } catch (_) {}
 }
 
@@ -300,7 +304,7 @@ class FastChess {
                 if (fwd >= 0 && fwd < 64 && !this.board[fwd]) {
                     const isPromo = Math.floor(fwd / 8) === promoRank;
                     if (isPromo) {
-                        for (const promo of ["q", "r", "b", "n"]) moves.push({ from: i, to: fwd, promo });
+                        for (const promo of ["q"]) moves.push({ from: i, to: fwd, promo });
                     } else {
                         moves.push({ from: i, to: fwd });
                         const fwd2 = i + dir * 16;
@@ -319,7 +323,7 @@ class FastChess {
                             const tp = this.board[target];
                             if (tp && tp.color === them) {
                                 if (isPromo) {
-                                    for (const promo of ["q", "r", "b", "n"]) moves.push({ from: i, to: target, promo, capture: tp.type });
+                                    for (const promo of ["q"]) moves.push({ from: i, to: target, promo, capture: tp.type });
                                 } else {
                                     moves.push({ from: i, to: target, capture: tp.type });
                                 }
@@ -1036,34 +1040,14 @@ async function executeMove(uci, insetRatio, flipped) {
 
     const pFrom = getSquareCoords(canvas, fromSq, insetRatio, flipped);
     const pTo   = getSquareCoords(canvas, toSq, insetRatio, flipped);
-    const t0 = Date.now();
-    const startFen = BOT_S.currentFen;
 
-    // 1. Select piece at source square
-    await dispatchTap(canvas, pFrom.x, pFrom.y, 25);
-    await sleep(BOT_CFG.clickDelay || 50);
+    // 1. Select piece at source square cleanly
+    await tapCanvasAt(canvas, pFrom.x, pFrom.y, 35);
+    await sleep(BOT_CFG.clickDelay || 70);
 
-    // 2. Place piece at destination square
-    await dispatchTap(canvas, pTo.x, pTo.y, 25);
-    await sleep(BOT_CFG.moveDelay || 60);
-
-    // 3. Special Castling Fallback:
-    // If this is a castling move (e1g1, e1c1, e8g8, e8c8) and Duolingo has not registered it,
-    // some Duolingo interfaces highlight the friendly Rook square.
-    const isCastle = (uci === "e1g1" || uci === "e1c1" || uci === "e8g8" || uci === "e8c8");
-    if (isCastle) {
-        await sleep(60);
-        if (_lastMoveSentTime <= t0 && (!BOT_S.currentFen || BOT_S.currentFen === startFen)) {
-            const rookSq = uci === "e1g1" ? "h1" :
-                           uci === "e1c1" ? "a1" :
-                           uci === "e8g8" ? "h8" : "a8";
-            const pRook = getSquareCoords(canvas, rookSq, insetRatio, flipped);
-            await dispatchTap(canvas, pFrom.x, pFrom.y, 25);
-            await sleep(BOT_CFG.clickDelay || 50);
-            await dispatchTap(canvas, pRook.x, pRook.y, 25);
-            await sleep(BOT_CFG.moveDelay || 60);
-        }
-    }
+    // 2. Place piece at destination square cleanly
+    await tapCanvasAt(canvas, pTo.x, pTo.y, 35);
+    await sleep(BOT_CFG.moveDelay || 70);
 
     return true;
 }
@@ -1111,23 +1095,14 @@ function getPromotionQueenCoords(canvas, destSq, insetRatio, flipped) {
 
     const coords = [];
 
-    // 1. Exact Queen icon in Duolingo "PAWN PROMOTION" canvas modal (File c, Row 3.0)
-    coords.push({ x: r.left + iw + 2.5 * (bw / 8), y: r.top + ih + 3.0 * (bh / 8) });
-    coords.push({ x: r.left + iw + 2.4 * (bw / 8), y: r.top + ih + 2.9 * (bh / 8) });
-    coords.push({ x: r.left + iw + 2.6 * (bw / 8), y: r.top + ih + 3.1 * (bh / 8) });
-
-    // 2. Alternate vertical alignments (Row 4.0 center, Row 5.0 lower)
-    coords.push({ x: r.left + iw + 2.5 * (bw / 8), y: r.top + ih + 4.0 * (bh / 8) });
-    coords.push({ x: r.left + iw + 2.5 * (bw / 8), y: r.top + ih + 5.0 * (bh / 8) });
-
-    // 3. Alternate horizontal alignment if modal is mirrored (File f, Column 5.5)
-    coords.push({ x: r.left + iw + 5.5 * (bw / 8), y: r.top + ih + 3.0 * (bh / 8) });
-
-    // 4. Destination square itself
+    // 1. Destination square itself (Duolingo promotion displays Queen on the destination square)
     if (destSq && destSq.length >= 2) {
         coords.push(getSquareCoords(canvas, destSq, insetRatio, flipped));
         coords.push(getSquareCoords(canvas, destSq, insetRatio, !flipped));
     }
+
+    // 2. Exact Queen icon in Duolingo centered canvas modal (File c, Row 3.0)
+    coords.push({ x: r.left + iw + 2.5 * (bw / 8), y: r.top + ih + 3.0 * (bh / 8) });
 
     return coords;
 }
@@ -1135,37 +1110,14 @@ function getPromotionQueenCoords(canvas, destSq, insetRatio, flipped) {
 function autoClickPromotion() {
     let clicked = false;
 
-    // 1. Find any promotion popup container by text/class/attribute
-    try {
-        const promoContainers = Array.from(document.querySelectorAll(
-            '[data-test*="promotion" i], [class*="promotion" i], [id*="promotion" i], div[role="dialog"], [aria-label*="promotion" i]'
-        ));
-        for (const container of promoContainers) {
-            if (container.closest("#dc-pill")) continue;
-            const items = Array.from(container.querySelectorAll('button, [role="button"], img, svg, div[tabindex], div[class*="piece" i]'))
-                .filter(el => {
-                    if (el.closest("#dc-pill")) return false;
-                    const r = el.getBoundingClientRect();
-                    return r.width >= 16 && r.height >= 16 && r.width <= 160 && r.height <= 160;
-                });
-            if (items.length > 0) {
-                items.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-                const queen = items[0];
-                const qr = queen.getBoundingClientRect();
-                dispatchTap(queen, qr.left + qr.width / 2, qr.top + qr.height / 2, 35);
-                simulateFullClick(queen);
-                return true;
-            }
-        }
-    } catch (_) {}
-
-    // 2. Direct Queen Selectors & Modal Dialogs
+    // 1. Direct Queen Selectors
     const queenSelectors = [
-        `[data-piece="queen"]`, `[data-piece="q"]`, `[data-piece="Q"]`,
+        `[data-piece="queen" i]`, `[data-piece="q" i]`, `[data-piece="Q" i]`,
         `[data-test*="queen" i]`, `[data-test*="player-piece-queen" i]`, `[data-test*="promotion-queen" i]`,
         `button[aria-label*="queen" i]`, `div[role="button"][aria-label*="queen" i]`,
         `img[alt*="queen" i]`, `img[src*="queen" i]`, `svg[data-piece*="queen" i]`,
-        `[aria-label*="hậu" i]`, `[aria-label*="dame" i]`, `[aria-label*="reina" i]`
+        `[aria-label*="hậu" i]`, `[aria-label*="dame" i]`, `[aria-label*="reina" i]`,
+        `[aria-label*="dama" i]`, `[aria-label*="ferz" i]`, `[aria-label*="königin" i]`
     ];
 
     for (const sel of queenSelectors) {
@@ -1173,11 +1125,39 @@ function autoClickPromotion() {
         for (const el of els) {
             if (isElementVisible(el) && !isForbiddenButton(el) && !el.closest("#dc-pill")) {
                 simulateFullClick(el);
-                clicked = true;
                 return true;
             }
         }
     }
+
+    // 2. Promotion modal containers: ONLY click if identified as Queen
+    try {
+        const promoContainers = Array.from(document.querySelectorAll(
+            '[data-test*="promotion" i], [class*="promotion" i], [id*="promotion" i], div[role="dialog"], [aria-label*="promotion" i]'
+        ));
+        for (const container of promoContainers) {
+            if (container.closest("#dc-pill")) continue;
+            // Check for explicit Queen inside this container
+            const queenEl = container.querySelector(queenSelectors.join(", "));
+            if (queenEl && isElementVisible(queenEl)) {
+                simulateFullClick(queenEl);
+                return true;
+            }
+
+            // Fallback inside container: find items and pick strictly the one with queen in class, id, or content
+            const items = Array.from(container.querySelectorAll('button, [role="button"], img, svg, div[tabindex], div[class*="piece" i]'))
+                .filter(el => {
+                    if (el.closest("#dc-pill") || !isElementVisible(el)) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width >= 16 && r.height >= 16 && r.width <= 160 && r.height <= 160;
+                });
+            const qItem = items.find(el => /queen|dame|reina|hậu|dama|ferz|\bq\b/i.test(el.outerHTML || ""));
+            if (qItem) {
+                simulateFullClick(qItem);
+                return true;
+            }
+        }
+    } catch (_) {}
 
     return clicked;
 }
@@ -1188,34 +1168,37 @@ async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
 
     try {
         // 1. Allow Duolingo canvas promotion modal to mount and render piece options
-        await sleep(180);
+        await sleep(150);
 
         const canvas = findCanvas();
-        if (!canvas) return false;
+        const coords = canvas ? getPromotionQueenCoords(canvas, destSq, insetRatio, flipped) : [];
 
-        const coords = getPromotionQueenCoords(canvas, destSq, insetRatio, flipped);
-
-        for (let attempt = 0; attempt < 8; attempt++) {
-            // A. Check DOM promotion popup (if any)
+        for (let attempt = 0; attempt < 10; attempt++) {
+            // A. Check DOM promotion popup (strictly Queen)
             if (autoClickPromotion()) {
+                await sleep(80);
                 return true;
             }
 
             // B. Canvas piece selection: Tap Queen modal icons on canvas
-            for (const pt of coords) {
-                await tapCanvasAt(canvas, pt.x, pt.y, 35);
+            if (canvas) {
+                for (const pt of coords) {
+                    await tapCanvasAt(canvas, pt.x, pt.y, 35);
+                }
             }
 
             // C. Send Queen keyboard triggers (Duolingo canvas listens to keydown 'q' / '1')
             try {
-                for (const key of ["q", "Q", "1", "Enter"]) {
+                for (const key of ["q", "Q", "1"]) {
                     const evOpts = { key, code: `Key${key.toUpperCase()}`, keyCode: key.toUpperCase().charCodeAt(0), bubbles: true, cancelable: true, composed: true };
                     window.dispatchEvent(new KeyboardEvent("keydown", evOpts));
                     document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+                    window.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+                    document.dispatchEvent(new KeyboardEvent("keyup", evOpts));
                 }
             } catch (_) {}
 
-            await sleep(75);
+            await sleep(80);
         }
     } finally {
         _pendingPromotionSq = null;
@@ -1527,32 +1510,35 @@ async function takeTurn() {
 
     try {
         const startFen = BOT_S.currentFen;
-        const move = await getBestMove(startFen);
+        let move = await getBestMove(startFen);
 
         if (!move || startFen !== BOT_S.currentFen) {
             setStatus("idle");
             return;
         }
 
+        const isPromotion = isPawnPromotion(startFen, move);
+        if (isPromotion && !move.endsWith("q")) {
+            move = move.slice(0, 4) + "q";
+        }
+
         setStatus("playing");
         BOT_S.lastMove = move;
 
         const flip = BOT_CFG.flipped || (BOT_S.playerColor || "").toLowerCase() === "black";
-        const isPromotion = isPawnPromotion(startFen, move);
 
-        // Execute verified move
+        // Execute verified move cleanly
         await executeMove(move, BOT_CFG.boardInsetRatio, flip);
 
         // Handle Queen promotion if applicable
         if (isPromotion) {
-            const promoChar = move[4] || "q";
-            await handlePromotion(move.slice(2, 4), promoChar, BOT_CFG.boardInsetRatio, flip);
+            await handlePromotion(move.slice(2, 4), "q", BOT_CFG.boardInsetRatio, flip);
         }
 
-        await sleep(BOT_CFG.moveDelay);
+        await sleep(BOT_CFG.moveDelay || 70);
         _lastMoveAttemptTime = Date.now();
         _lastAttemptedFen = startFen;
-        _lastAttemptCount = (_lastAttemptedFen === startFen ? _lastAttemptCount + 1 : 1);
+        _lastAttemptCount = 1;
         setStatus("waiting");
     } catch (_) {
         setStatus("idle");
@@ -1618,13 +1604,16 @@ async function solveChallenge(ch) {
         renderPanel();
         if (step.kind === "player") {
             if (!validUCI(step.move)) continue;
-            const isPromotion = step.move.length >= 5 || (step.move[1] === "7" && step.move[3] === "8") || (step.move[1] === "2" && step.move[3] === "1");
-            await executeMove(step.move, SOL_CFG.boardInsetRatio, flip);
-            if (isPromotion) {
-                const promoChar = step.move[4] || "q";
-                await handlePromotion(step.move.slice(2, 4), promoChar, SOL_CFG.boardInsetRatio, flip);
+            let m = step.move;
+            const isPromotion = m.length >= 5 || (m[1] === "7" && m[3] === "8") || (m[1] === "2" && m[3] === "1");
+            if (isPromotion && !m.endsWith("q")) {
+                m = m.slice(0, 4) + "q";
             }
-            await sleep(SOL_CFG.moveDelay);
+            await executeMove(m, SOL_CFG.boardInsetRatio, flip);
+            if (isPromotion) {
+                await handlePromotion(m.slice(2, 4), "q", SOL_CFG.boardInsetRatio, flip);
+            }
+            await sleep(SOL_CFG.moveDelay || 70);
         } else {
             const h1 = canvasHash();
             await waitCanvasChange(h1, SOL_CFG.enemyDelay);
@@ -2089,10 +2078,10 @@ async function _autoPollLoop() {
             setStatus("idle");
         }
 
-        // Watchdog 2: Single turn trigger with rapid retry cooldown (never permanently freeze)
+        // Watchdog 2: Single turn trigger with safe cooldown (never re-click a move while in flight)
         if (BOT_CFG.autoPlay && isOurTurn(BOT_S.currentFen) && !BOT_S.turnInProgress && BOT_S.status !== "playing" && BOT_S.status !== "thinking") {
             const isSameFen = (BOT_S.currentFen === _lastAttemptedFen);
-            const cooldown = isSameFen ? 350 : 80;
+            const cooldown = isSameFen ? 1500 : 80;
             if (Date.now() - _lastMoveAttemptTime > cooldown) {
                 setStatus("our_turn");
                 takeTurn();
