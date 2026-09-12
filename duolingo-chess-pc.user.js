@@ -1291,7 +1291,7 @@ function simulateFullClick(el) {
     }
 }
 
-let _lastAutoMatchTime = 0;
+
 
 function autoMatchOscar() {
     if (!BOT_CFG.autoMatch) return false;
