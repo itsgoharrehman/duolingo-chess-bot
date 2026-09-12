@@ -31,7 +31,7 @@ const DEVICE_TYPE = "desktop";
 
 const BOT_CFG = {
     engine:          "hybrid", // Embedded + Stockfish Fallback
-    stockfishDepth:  15,
+    stockfishDepth:  14,
     clickDelay:      70,
     moveDelay:       70,
     thinkDelay:      10,
@@ -160,6 +160,39 @@ const PST_BISHOP = [
     -10, 10, 10, 10, 10, 10, 10,-10,
     -10,  5,  0,  0,  0,  0,  5,-10,
     -20,-10,-10,-10,-10,-10,-10,-20,
+];
+
+const PST_ROOK = [
+      0,  0,  0,  0,  0,  0,  0,  0,
+      5, 10, 10, 10, 10, 10, 10,  5,
+     -5,  0,  0,  0,  0,  0,  0, -5,
+     -5,  0,  0,  0,  0,  0,  0, -5,
+     -5,  0,  0,  0,  0,  0,  0, -5,
+     -5,  0,  0,  0,  0,  0,  0, -5,
+     -5,  0,  0,  0,  0,  0,  0, -5,
+      0,  0,  0,  5,  5,  0,  0,  0
+];
+
+const PST_QUEEN = [
+    -20,-10,-10, -5, -5,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5,  5,  5,  5,  0,-10,
+     -5,  0,  5,  5,  5,  5,  0, -5,
+      0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  0,  0,  0,  0,-10,
+    -20,-10,-10, -5, -5,-10,-10,-20
+];
+
+const PST_KING = [
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -20,-30,-30,-40,-40,-30,-30,-20,
+    -10,-20,-20,-20,-20,-20,-20,-10,
+     20, 20,  0,  0,  0,  0, 20, 20,
+     20, 30, 10,  0,  0, 10, 30, 20
 ];
 
 class FastChess {
@@ -474,6 +507,9 @@ class FastChess {
             if (p.type === "p") val += PST_PAWN[tableIdx] || 0;
             else if (p.type === "n") val += PST_KNIGHT[tableIdx] || 0;
             else if (p.type === "b") val += PST_BISHOP[tableIdx] || 0;
+            else if (p.type === "r") val += PST_ROOK[tableIdx] || 0;
+            else if (p.type === "q") val += PST_QUEEN[tableIdx] || 0;
+            else if (p.type === "k") val += PST_KING[tableIdx] || 0;
 
             score += p.color === "w" ? val : -val;
         }
@@ -485,7 +521,7 @@ class FastChess {
         const moves = this.getLegalMoves();
         if (moves.length === 0) {
             if (this.inCheck(this.turn)) return -100000 - depth; // Checkmate
-            return 0; // Stalemate
+            return -50000; // Anti-Stalemate: heavily penalize draws so winning positions NEVER stalemate
         }
 
         // Sort captures first
@@ -606,9 +642,17 @@ function getBookMove(fen) {
         "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq -": "d2d3", // Giuoco Pianissimo
         "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq -": "c2c3", // Main Italian line
         "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "g1f3", // Open Sicilian
+        "rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq -": "d7d6",
+        "rnbqkbnr/pp2pppp/3p4/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -": "d2d4",
         "rnbqkbnr/pppp1ppp/4p3/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "d2d4", // French Defense
+        "rnbqkbnr/pppp1ppp/4p3/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3": "d7d5",
+        "rnbqkbnr/pppp1ppp/8/3p4/3PP3/8/PPP2PPP/RNBQKBNR w KQkq -": "e4e5",
+        "rnbqkbnr/pp1ppppp/2p5/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "d2d4", // Caro-Kann
+        "rnbqkbnr/pp1ppppp/2p5/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3": "d7d5",
+        "rnbqkbnr/pp2pppp/2p5/3p4/3PP3/8/PPP2PPP/RNBQKBNR w KQkq -": "e4e5",
         "rnbqkbnr/ppppp1pp/8/5p2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "e4f5", // vs Dutch
         "rnbqkbnr/pppppp1p/8/6p1/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "d2d4", // vs Borg / Grob
+        "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq -": "c2c4", // Queen's Gambit
 
         // High-level defense for Black
         "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3": "e7e5", // Open Game
@@ -626,7 +670,7 @@ function getBookMove(fen) {
 async function getLichessCloudMove(fen) {
     try {
         const encodedFen = encodeURIComponent(fen);
-        const data = await gmHttpFetch(`https://lichess.org/api/cloud-eval?fen=${encodedFen}&multiPv=1`, 1500);
+        const data = await gmHttpFetch(`https://lichess.org/api/cloud-eval?fen=${encodedFen}&multiPv=1`, 1200);
         if (data && Array.isArray(data.pvs) && data.pvs[0] && data.pvs[0].moves) {
             const mv = data.pvs[0].moves.split(/\s+/)[0];
             if (validUCI(mv)) return mv;
@@ -640,28 +684,11 @@ async function getLichessCloudMove(fen) {
 async function getFastStockfishMove(fen) {
     try {
         const encodedFen = encodeURIComponent(fen);
-        const depth = BOT_CFG.stockfishDepth || 15;
-        const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodedFen}&depth=${depth}&mode=bestmove`, 3500);
+        const depth = BOT_CFG.stockfishDepth || 14;
+        const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodedFen}&depth=${depth}&mode=bestmove`, 4000);
         if (!data || !data.success || !data.bestmove) return null;
         const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
         return validUCI(mv) ? mv : null;
-    } catch (_) {
-        return null;
-    }
-}
-
-async function getChessApiMove(fen) {
-    try {
-        const data = await gmHttpFetch("https://chess-api.com/v1", 3500, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            data: JSON.stringify({ fen: fen, depth: 15 })
-        });
-        if (data && (data.move || (data.from && data.to))) {
-            const mv = data.move || (data.from + data.to + (data.promotion || ""));
-            return validUCI(mv) ? mv : null;
-        }
-        return null;
     } catch (_) {
         return null;
     }
@@ -674,14 +701,14 @@ async function getBestMove(fen) {
         if (!legalMoves || legalMoves.length === 0) return null;
         const legalUcis = legalMoves.map(m => engine.moveToUci(m));
 
-        // 1. Opening Book for instant, infallible master opening lines
+        // 1. Instant 0ms Opening Book (Master Theory)
         const bookMv = getBookMove(fen);
         if (bookMv && legalUcis.includes(bookMv)) {
             BOT_S.engineName = "Book Opening";
             return bookMv;
         }
 
-        // 2. Instant Checkmate Scan in 1 move
+        // 2. Instant Checkmate Scan in 1 move (0ms finish)
         for (const m of legalMoves) {
             const clone = engine.clone();
             clone.makeMove(m);
@@ -692,36 +719,26 @@ async function getBestMove(fen) {
             }
         }
 
-        // 3. Multi-Provider Grandmaster Parallel Evaluation (Lichess Cloud + Stockfish Online + Chess-API)
-        const lichessPromise = getLichessCloudMove(fen).then(mv => (mv && legalUcis.includes(mv)) ? { name: "Lichess Cloud", move: mv } : null).catch(() => null);
-        const stockfishOnlinePromise = getFastStockfishMove(fen).then(mv => (mv && legalUcis.includes(mv)) ? { name: "Stockfish 16+", move: mv } : null).catch(() => null);
-        const chessApiPromise = getChessApiMove(fen).then(mv => (mv && legalUcis.includes(mv)) ? { name: "Stockfish 16+", move: mv } : null).catch(() => null);
+        // 3. Concurrent Stockfish 16+ & Lichess Cloud Evaluation (GM 3500+ Elo)
+        const stockfishPromise = getFastStockfishMove(fen).then(mv => {
+            if (mv && legalUcis.includes(mv)) return { name: "Stockfish 16+", move: mv };
+            throw new Error("No Stockfish move");
+        });
 
-        // Fast path: Lichess Cloud
-        const cloudRes = await Promise.race([
-            lichessPromise,
-            new Promise(r => setTimeout(() => r(null), 1000))
-        ]);
-        if (cloudRes && cloudRes.move) {
-            BOT_S.engineName = cloudRes.name;
-            return cloudRes.move;
-        }
+        const lichessPromise = getLichessCloudMove(fen).then(mv => {
+            if (mv && legalUcis.includes(mv)) return { name: "Lichess Cloud", move: mv };
+            throw new Error("No Lichess move");
+        });
 
-        // Parallel Stockfish 16+ Engines
-        const fastSf = await Promise.race([stockfishOnlinePromise, chessApiPromise]);
-        if (fastSf && fastSf.move) {
-            BOT_S.engineName = fastSf.name;
-            return fastSf.move;
-        }
+        try {
+            const winner = await Promise.any([stockfishPromise, lichessPromise]);
+            if (winner && winner.move) {
+                BOT_S.engineName = winner.name;
+                return winner.move;
+            }
+        } catch (_) {}
 
-        const [sf1, sf2, lcs] = await Promise.all([stockfishOnlinePromise, chessApiPromise, lichessPromise]);
-        const bestOnline = sf1 || sf2 || lcs;
-        if (bestOnline && bestOnline.move) {
-            BOT_S.engineName = bestOnline.name;
-            return bestOnline.move;
-        }
-
-        // Fallback: Local Minimax Engine (only if completely offline)
+        // Fallback: Local Engine (Anti-Stalemate Grandmaster Minimax)
         const bestMv = engine.getBestMove(3);
         if (bestMv && legalUcis.includes(bestMv)) {
             BOT_S.engineName = "Embedded GM";
@@ -2072,8 +2089,8 @@ async function _autoPollLoop() {
     while (true) {
         await sleep(POLL_MS);
 
-        // Watchdog 1: Clear stuck thinking/playing if hung > 2.0s
-        if ((BOT_S.status === "thinking" || BOT_S.status === "playing" || BOT_S.turnInProgress) && (Date.now() - _lastStateChange > 2000)) {
+        // Watchdog 1: Clear stuck thinking/playing if hung > 8.0s (never abort legitimate deep engine searches)
+        if ((BOT_S.status === "thinking" || BOT_S.status === "playing" || BOT_S.turnInProgress) && (Date.now() - _lastStateChange > 8000)) {
             BOT_S.turnInProgress = false;
             setStatus("idle");
         }
