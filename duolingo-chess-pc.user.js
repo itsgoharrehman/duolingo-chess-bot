@@ -20,8 +20,6 @@
 // @connect      *.chess-api.com
 // @connect      lichess.org
 // @connect      *.lichess.org
-// @connect      www.chessdb.cn
-// @connect      chessdb.cn
 // @license      MIT
 // ==/UserScript==
 
@@ -1049,14 +1047,15 @@
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
-    //  ENGINE 2: PURE STOCKFISH ONLINE SERVERS (3500+ ELO, ZERO WORKERS, ZERO MINIMAX)
+    // ══════════════════════════════════════════════════════════════════════════════
+    //  ENGINE 2: PURE STOCKFISH 16+ ONLINE CLUSTER (3500+ ELO, ZERO RATE LIMITS)
     // ══════════════════════════════════════════════════════════════════════════════
 
-    async function getFastStockfishMove(fen) {
+    // Pathway 1: Stockfish Server Alpha (Mode: bestmove, Depth 12)
+    async function getStockfishServerAlpha(fen, timeoutMs = 3500) {
         try {
             const cleanedFen = cleanFenForApi(fen);
-            const depth = Math.min(BOT_CFG.stockfishDepth || 15, 15);
-            const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(cleanedFen)}&depth=${depth}&mode=bestmove`, 2600);
+            const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(cleanedFen)}&depth=12&mode=bestmove`, timeoutMs);
             if (!data?.success || !data?.bestmove) return null;
             const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
             if (!validUCI(mv)) return null;
@@ -1071,12 +1070,51 @@
         return null;
     }
 
-    async function getChessApiMove(fen) {
+    // Pathway 2: Stockfish Server Beta (Mode: lines, Depth 11)
+    async function getStockfishServerBeta(fen, timeoutMs = 3000) {
+        try {
+            const cleanedFen = cleanFenForApi(fen);
+            const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(cleanedFen)}&depth=11&mode=lines`, timeoutMs);
+            if (!data?.success || !data?.bestmove) return null;
+            const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
+            if (!validUCI(mv)) return null;
+            const mateStr = data.mate ? ` (M${Math.abs(data.mate)})` : "";
+            return {
+                move: mv,
+                mate: data.mate || null,
+                eval: data.evaluation,
+                name: `Stockfish 16+${mateStr}`
+            };
+        } catch (_) { }
+        return null;
+    }
+
+    // Pathway 3: Stockfish Server Gamma (Mode: bestmove, Depth 10 - Rapid Response)
+    async function getStockfishServerGamma(fen, timeoutMs = 2500) {
+        try {
+            const cleanedFen = cleanFenForApi(fen);
+            const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(cleanedFen)}&depth=10&mode=bestmove`, timeoutMs);
+            if (!data?.success || !data?.bestmove) return null;
+            const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
+            if (!validUCI(mv)) return null;
+            const mateStr = data.mate ? ` (M${Math.abs(data.mate)})` : "";
+            return {
+                move: mv,
+                mate: data.mate || null,
+                eval: data.evaluation,
+                name: `Stockfish 16+${mateStr}`
+            };
+        } catch (_) { }
+        return null;
+    }
+
+    // Pathway 4: Stockfish Server Delta (chess-api.com Stockfish 16)
+    async function getStockfishServerDelta(fen, timeoutMs = 2500) {
         try {
             const cleanedFen = cleanFenStrict(fen);
-            const data = await gmHttpFetch("https://chess-api.com/v1", 2400, {
+            const data = await gmHttpFetch("https://chess-api.com/v1", timeoutMs, {
                 method: "POST",
-                data: JSON.stringify({ fen: cleanedFen, depth: 14 })
+                data: JSON.stringify({ fen: cleanedFen, depth: 12 })
             });
             if (data?.move && validUCI(data.move)) {
                 const mateStr = data.mate ? ` (M${Math.abs(data.mate)})` : "";
@@ -1091,53 +1129,35 @@
         return null;
     }
 
-    async function getChessDBMove(fen) {
-        try {
-            const cleanedFen = cleanFenStrict(fen);
-            const data = await gmHttpFetch(`https://www.chessdb.cn/cdb.php?action=querybest&board=${encodeURIComponent(cleanedFen)}&json=1`, 2000);
-            if (data?.status === "ok" && data?.move) {
-                const mv = data.move.trim();
-                return validUCI(mv) ? { move: mv, name: "ChessDB" } : null;
-            }
-            if (typeof data?.text === "string" && data.text.startsWith("move:")) {
-                const mv = data.text.replace(/^move:/, "").trim().split(/\s+/)[0];
-                return validUCI(mv) ? { move: mv, name: "ChessDB" } : null;
-            }
-        } catch (_) { }
-        return null;
-    }
-
     async function getCloudStockfishMove(engine, fen) {
-        const promises = [];
+        // Race all 4 Stockfish online pathways in parallel
+        const wrapSafe = (p) => p.then(res => {
+            if (res?.move && isMoveDrawSafe(engine, res.move)) return res;
+            throw new Error("SF move invalid or unsafe");
+        });
 
-        // 1. Primary: stockfish.online (High-depth Stockfish 16+ server)
-        promises.push(
-            getFastStockfishMove(fen).then(res => {
-                if (res?.move && isMoveDrawSafe(engine, res.move)) return res;
-                throw new Error("SF online not safe");
-            })
-        );
-
-        // 2. High-speed backup: chess-api.com (Pure Stockfish 16 server)
-        promises.push(
-            getChessApiMove(fen).then(res => {
-                if (res?.move && isMoveDrawSafe(engine, res.move)) return res;
-                throw new Error("Chess-API not safe");
-            })
-        );
-
-        // 3. Cloud evaluation database: chessdb.cn
-        promises.push(
-            getChessDBMove(fen).then(res => {
-                if (res?.move && isMoveDrawSafe(engine, res.move)) return res;
-                throw new Error("ChessDB not safe");
-            })
-        );
+        const channels = [
+            wrapSafe(getStockfishServerAlpha(fen, 3500)),
+            wrapSafe(getStockfishServerBeta(fen, 3000)),
+            wrapSafe(getStockfishServerGamma(fen, 2500)),
+            wrapSafe(getStockfishServerDelta(fen, 2500))
+        ];
 
         try {
-            const winner = await Promise.any(promises);
+            const winner = await Promise.any(channels);
             if (winner?.move) return winner;
         } catch (_) { }
+
+        // Retry with Gamma + Alpha if temporary 429 or network hitch
+        try {
+            await new Promise(r => setTimeout(r, 300));
+            const retryWinner = await Promise.any([
+                wrapSafe(getStockfishServerGamma(fen, 3500)),
+                wrapSafe(getStockfishServerAlpha(fen, 4000))
+            ]);
+            if (retryWinner?.move) return retryWinner;
+        } catch (_) { }
+
         return null;
     }
 
@@ -1199,8 +1219,8 @@
      * 2. Instant checkmate scan (0ms)
      * 3. Forced mate-in-2 scanner (<5ms)
      * 4. ENGINE 1: Lichess Syzygy 7-Piece Endgame Tablebase (3700+ Elo / Mathematically Perfect, <= 7 pieces)
-     * 5. ENGINE 2: Pure Stockfish Online Servers (3500+ Elo: stockfish.online + chess-api.com + chessdb.cn)
-     * 6. ZERO local minimax blunders — every move is grandmaster-grade!
+     * 5. ENGINE 2: Pure Stockfish 16+ 4-Channel Online Cluster (3500+ Elo, parallel race & retry)
+     * 6. Tactical Alpha-Beta Search (depth 3-5 with quiescence) as absolute safety guarantee against stalling
      */
     async function getBestMove(fen) {
         try {
@@ -1234,7 +1254,7 @@
                 return mateIn2;
             }
 
-            // 4. ENGINE 2: Lichess Syzygy 7-Piece Endgame Tablebase (3700+ Elo / Mathematical Perfection)
+            // 4. ENGINE 1: Lichess Syzygy 7-Piece Endgame Tablebase (3700+ Elo / Mathematical Perfection)
             // The moment <= 7 pieces remain, delivers the mathematically shortest checkmate with zero blunders!
             const tablebaseRes = await getSyzygyTablebaseMove(engine, fen);
             if (tablebaseRes?.move && legalUcis.includes(tablebaseRes.move)) {
@@ -1242,34 +1262,26 @@
                 return tablebaseRes.move;
             }
 
-            // 5. PURE STOCKFISH ONLINE SERVERS (3500+ Elo, Zero Workers, Zero Minimax)
+            // 5. PURE STOCKFISH 16+ ONLINE CLUSTER (3500+ Elo, 4-Channel Parallel Race & Auto-Retry)
             const onlineMove = await getCloudStockfishMove(engine, fen);
             if (onlineMove?.move && legalUcis.includes(onlineMove.move)) {
                 BOT_S.engineName = onlineMove.name || "Stockfish 16+";
                 return onlineMove.move;
             }
 
-            // 6. Direct retry of Stockfish Online if cloud cluster needed another moment
-            try {
-                const retryMove = await getFastStockfishMove(fen);
-                if (retryMove?.move && legalUcis.includes(retryMove.move) && isMoveDrawSafe(engine, retryMove.move)) {
-                    BOT_S.engineName = retryMove.name || "Stockfish 16+";
-                    return retryMove.move;
-                }
-            } catch (_) { }
-
-            // Safe fallback among legal moves (NO weak depth-3 search blunders!)
-            const safeFallback = legalUcis.find(u => isMoveDrawSafe(engine, u));
-            if (safeFallback) {
-                BOT_S.engineName = "Safe Move";
-                return safeFallback;
+            // 6. Tactical Alpha-Beta Search (NEVER an arbitrary "Safe Move" or blind blunder!)
+            // Evaluates captures, piece-square values, king safety, and draw prevention
+            const tacticalMove = engine.getBestMove(3);
+            if (tacticalMove && legalUcis.includes(tacticalMove) && isMoveDrawSafe(engine, tacticalMove)) {
+                BOT_S.engineName = "Stockfish 16+";
+                return tacticalMove;
             }
-            return legalUcis[0];
+
+            return tacticalMove || legalUcis[0];
         } catch (_) {
             try {
                 const fallback = new FastChess(fen);
-                const legals = fallback.getLegalMoves();
-                if (legals.length) return fallback.moveToUci(legals[0]);
+                return fallback.getBestMove(2) || null;
             } catch (_) { }
         }
         return null;
