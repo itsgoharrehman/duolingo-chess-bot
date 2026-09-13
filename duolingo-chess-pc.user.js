@@ -2273,8 +2273,8 @@
 
     let _panel = null;
 
-    const SVG_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor" style="margin-left:1px"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>';
-    const SVG_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg>';
+    const SVG_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor" style="margin-left:2px"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>';
+    const SVG_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1.5"></rect><rect x="14" y="4" width="4" height="16" rx="1.5"></rect></svg>';
     const SVG_MATCH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>';
 
     const STYLE = `
@@ -2287,16 +2287,16 @@
     align-items: center;
     background: #18181b;
     border: 1px solid #27272a;
-    border-radius: 14px;
-    padding: 2px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    border-radius: 24px;
+    padding: 4px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
     user-select: none;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 .dc-btn {
-    width: 22px;
-    height: 22px;
+    width: 38px;
+    height: 38px;
     border-radius: 50%;
     border: none;
     cursor: pointer;
@@ -2312,8 +2312,8 @@
 }
 
 .dc-btn svg {
-    width: 10px;
-    height: 10px;
+    width: 18px;
+    height: 18px;
     display: block;
     pointer-events: none;
 }
@@ -2323,7 +2323,7 @@
 }
 
 .dc-btn:active {
-    transform: scale(0.9);
+    transform: scale(0.92);
 }
 
 /* Calm solid matte colors — no stinging neons, no glassmorphism */
@@ -2346,17 +2346,17 @@
 }
 
 #dc-engine-box {
-    padding: 0 7px;
+    padding: 0 14px;
     display: flex;
     align-items: center;
     justify-content: center;
-    min-width: 75px;
-    max-width: 160px;
+    min-width: 95px;
+    max-width: 190px;
 }
 
 #dc-engine-name {
     color: #d4d4d8;
-    font-size: 10.5px;
+    font-size: 12.5px;
     font-weight: 600;
     letter-spacing: 0.2px;
     white-space: nowrap;
