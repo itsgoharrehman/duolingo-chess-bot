@@ -935,7 +935,7 @@ function getBookMove(fen) {
 
 async function getLichessCloudMove(fen) {
     try {
-        const data = await gmHttpFetch(`https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=1`, 1200);
+        const data = await gmHttpFetch(`https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=1`, 1800);
         if (data?.pvs?.[0]?.moves) {
             const mv = data.pvs[0].moves.split(/\s+/)[0];
             if (validUCI(mv)) return mv;
@@ -946,8 +946,8 @@ async function getLichessCloudMove(fen) {
 
 async function getFastStockfishMove(fen) {
     try {
-        const depth = BOT_CFG.stockfishDepth || 14;
-        const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(fen)}&depth=${depth}&mode=bestmove`, 1200);
+        const depth = BOT_CFG.stockfishDepth || 12;
+        const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(fen)}&depth=${depth}&mode=bestmove`, 3500);
         if (!data?.success || !data?.bestmove) return null;
         const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
         if (!validUCI(mv)) return null;
@@ -958,7 +958,7 @@ async function getFastStockfishMove(fen) {
 
 async function getChessDBMove(fen) {
     try {
-        const data = await gmHttpFetch(`https://www.chessdb.cn/cdb.php?action=querybest&board=${encodeURIComponent(fen)}&json=1`, 1200);
+        const data = await gmHttpFetch(`https://www.chessdb.cn/cdb.php?action=querybest&board=${encodeURIComponent(fen)}&json=1`, 1800);
         if (data?.status === "ok" && data?.move) {
             const mv = data.move.trim();
             return validUCI(mv) ? mv : null;
@@ -969,7 +969,7 @@ async function getChessDBMove(fen) {
 
 /**
  * Validate a cloud/external move against draw-prevention rules.
- * Returns true if the move is SAFE (no stalemate, no repetition).
+ * Returns true if the move is SAFE (no stalemate, no 3-fold repetition).
  */
 function isMoveDrawSafe(engine, moveUci) {
     try {
@@ -979,24 +979,30 @@ function isMoveDrawSafe(engine, moveUci) {
         const promo = moveUci.length >= 5 ? moveUci[4] : null;
         clone.makeMove({ from, to, promo });
         const oppLegal = clone.getLegalMoves();
+        // Strict: NEVER allow a stalemate move (opponent has 0 moves without check)
         const isStalemate = oppLegal.length === 0 && !clone.inCheck(clone.turn);
+        if (isStalemate) return false;
+
+        // Strict: NEVER allow a move that causes 3-fold repetition (count >= 2)
         const nextKey = getPositionKey(clone.toFen());
-        // Strict: ANY previously visited position (>= 1) is rejected to prevent repetition
-        const isRepetition = (_gamePositionCounts.get(nextKey) || 0) >= 1;
-        return !isStalemate && !isRepetition;
+        const isRepetition = (_gamePositionCounts.get(nextKey) || 0) >= 2;
+        if (isRepetition) return false;
+
+        return true;
     } catch (_) {
         return true; // On error, allow the move
     }
 }
 
 /**
- * Master move finder with layered fallback:
- * 1. Opening book
- * 2. Instant checkmate scan (0ms)
- * 3. Forced mate-in-2 scanner (<5ms)
- * 4. Cloud engines (Stockfish, Lichess, ChessDB) — race with 1.2s timeout
- * 5. Local embedded engine (depth 3/4 + quiescence + mop-up endgame evaluation)
- * Every external move is validated against stalemate/repetition before use.
+ * Master move finder with strict priority hierarchy:
+ * 1. Instant opening book (0ms)
+ * 2. Instant checkmate scan (0ms finish)
+ * 3. Forced mate-in-2 scanner (<5ms finish)
+ * 4. Primary Master Engine: Stockfish 16+ (3500+ Elo, depth 12, 3500ms timeout)
+ *    NO racing with inferior engines — Stockfish is given dedicated priority!
+ * 5. Cloud Backup Engine (Lichess Cloud / ChessDB) — ONLY if Stockfish server fails or times out
+ * 6. High-Performance Local Engine (Depth 4 + Mop-Up + Anti-Stalemate) — ONLY if completely offline
  */
 async function getBestMove(fen) {
     try {
@@ -1012,7 +1018,7 @@ async function getBestMove(fen) {
             return bookMv;
         }
 
-        // 2. Instant Checkmate Scan (0ms)
+        // 2. Instant Checkmate Scan in 1 move (0ms finish)
         for (const m of legalMoves) {
             const clone = engine.clone();
             clone.makeMove(m);
@@ -1023,51 +1029,53 @@ async function getBestMove(fen) {
             }
         }
 
-        // 3. Forced Mate-in-2 Scan (<5ms)
+        // 3. Forced Mate-in-2 Scan (<5ms finish)
         const mateIn2 = findMateIn2(engine);
         if (mateIn2 && legalUcis.includes(mateIn2) && isMoveDrawSafe(engine, mateIn2)) {
             BOT_S.engineName = "Forced Mate (M2)";
             return mateIn2;
         }
 
-        // 4. Cloud Engines (race with 1200ms global timeout)
-        const stockfishPromise = getFastStockfishMove(fen).then(res => {
-            const mv = typeof res === "object" ? res?.move : res;
-            if (mv && legalUcis.includes(mv)) {
-                return { name: res?.mate ? `Stockfish (M${Math.abs(res.mate)})` : "Stockfish 16+", move: mv };
-            }
-            throw new Error("miss");
-        });
-        const lichessPromise = getLichessCloudMove(fen).then(mv => {
-            if (mv && legalUcis.includes(mv)) return { name: "Lichess Cloud", move: mv };
-            throw new Error("miss");
-        });
-        const chessdbPromise = getChessDBMove(fen).then(mv => {
-            if (mv && legalUcis.includes(mv)) return { name: "ChessDB", move: mv };
-            throw new Error("miss");
-        });
-
+        // 4. Primary Master Engine: Stockfish 16+ (depth 12, 3500ms timeout)
+        // Highest strength (3500+ Elo), zero blunders, decisive checkmates.
+        // We do NOT race it against inferior engines: Stockfish is given full priority!
         try {
-            const cloudTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 1200));
-            const winner = await Promise.race([
-                Promise.any([stockfishPromise, lichessPromise, chessdbPromise]),
-                cloudTimeout
-            ]);
-            if (winner?.move && isMoveDrawSafe(engine, winner.move)) {
-                BOT_S.engineName = winner.name;
-                return winner.move;
+            const sfRes = await getFastStockfishMove(fen);
+            const sfMv = typeof sfRes === "object" ? sfRes?.move : sfRes;
+            if (sfMv && legalUcis.includes(sfMv) && isMoveDrawSafe(engine, sfMv)) {
+                BOT_S.engineName = sfRes?.mate ? `Stockfish (M${Math.abs(sfRes.mate)})` : "Stockfish 16+";
+                return sfMv;
             }
         } catch (_) {}
 
-        // 5. Local Embedded Engine with endgame depth 4 and mop-up evaluation
+        // 5. Cloud Backup Engine (Lichess Cloud / ChessDB) — ONLY if Stockfish server fails or times out
+        try {
+            const backupWinner = await Promise.any([
+                getLichessCloudMove(fen).then(mv => {
+                    if (mv && legalUcis.includes(mv) && isMoveDrawSafe(engine, mv)) return { name: "Lichess Cloud", move: mv };
+                    throw new Error();
+                }),
+                getChessDBMove(fen).then(mv => {
+                    if (mv && legalUcis.includes(mv) && isMoveDrawSafe(engine, mv)) return { name: "ChessDB", move: mv };
+                    throw new Error();
+                })
+            ]);
+            if (backupWinner?.move) {
+                BOT_S.engineName = backupWinner.name;
+                return backupWinner.move;
+            }
+        } catch (_) {}
+
+        // 6. High-Performance Local Engine (Endgame depth 4, Mop-Up, Anti-Stalemate) — ONLY if offline
         const bestMv = engine.getBestMove(3);
         if (bestMv && legalUcis.includes(bestMv)) {
-            BOT_S.engineName = "Embedded GM";
+            BOT_S.engineName = "Offline Engine";
             return bestMv;
         }
 
-        // Absolute last resort
-        return legalUcis[0];
+        // Absolute last resort (safe legal move)
+        const safeFallback = legalUcis.find(u => isMoveDrawSafe(engine, u));
+        return safeFallback || legalUcis[0];
     } catch (_) {
         try {
             const fallback = new FastChess(fen);
@@ -1299,23 +1307,46 @@ function simulateFullClick(el, force = false) {
     _lastClickTime = now;
 
     try {
-        if (typeof el.focus === "function") el.focus();
-        if (typeof el.click === "function") el.click();
+        const r = el.getBoundingClientRect();
+        const cx = r.left + r.width / 2;
+        const cy = r.top + r.height / 2;
 
-        // Trigger React's synthetic onClick handler directly
-        const rKey = Object.keys(el).find(k =>
-            k.startsWith("__reactProps$") || k.startsWith("__reactEventHandlers$") || k.startsWith("__reactFiber$"));
-        if (rKey && el[rKey]) {
-            const props = el[rKey].memoizedProps || el[rKey];
-            if (typeof props?.onClick === "function") {
-                try {
-                    props.onClick({
-                        preventDefault: () => {},
-                        stopPropagation: () => {},
-                        target: el,
-                        currentTarget: el,
-                    });
-                } catch (_) {}
+        if (typeof el.focus === "function") el.focus();
+
+        dispatchPointer("pointerdown", el, cx, cy, 1, 0, 1);
+        dispatchPointer("mousedown", el, cx, cy, 1, 0, 1);
+        dispatchPointer("pointerup", el, cx, cy, 0, 0, 1);
+        dispatchPointer("mouseup", el, cx, cy, 0, 0, 1);
+        if (typeof el.click === "function") el.click();
+        dispatchPointer("click", el, cx, cy, 0, 0, 1);
+
+        // Direct React synthetic event invocation
+        for (const target of [el, el.parentElement]) {
+            if (!target) continue;
+            for (const key of Object.keys(target)) {
+                if (key.startsWith("__reactProps$") || key.startsWith("__reactEventHandlers$") || key.startsWith("__reactFiber$")) {
+                    const props = target[key]?.memoizedProps || target[key];
+                    if (typeof props?.onClick === "function") {
+                        try {
+                            props.onClick({
+                                preventDefault: () => {},
+                                stopPropagation: () => {},
+                                target: el,
+                                currentTarget: target,
+                            });
+                        } catch (_) {}
+                    }
+                    if (typeof props?.onPointerDown === "function") {
+                        try {
+                            props.onPointerDown({
+                                preventDefault: () => {},
+                                stopPropagation: () => {},
+                                target: el,
+                                currentTarget: target,
+                            });
+                        } catch (_) {}
+                    }
+                }
             }
         }
         return true;
@@ -1349,7 +1380,7 @@ function findPromotionModal() {
                 for (let i = 0; i < 4; i++) {
                     if (!el.parentElement || el.parentElement === document.body || el.parentElement === document.documentElement) break;
                     const r = el.getBoundingClientRect();
-                    if (r.width >= 120 && r.height >= 50) break;
+                    if (r.width >= 100 && r.height >= 40) break;
                     el = el.parentElement;
                 }
                 if (isElementVisible(el)) return el;
@@ -1361,20 +1392,20 @@ function findPromotionModal() {
 }
 
 /**
- * Try to click the Queen promotion button in the DOM.
- * Returns true if a queen selector or leftmost promotion option was found and clicked.
+ * Try to click the Queen promotion button in the DOM or at physical screen coordinates.
+ * Returns true if Queen was targeted and clicked.
  */
 function autoClickPromotion() {
     const queenSelectors = [
         `[data-piece="queen" i]`, `[data-piece="q" i]`, `[data-piece="Q" i]`,
         `[data-test*="queen" i]`, `[data-test*="player-piece-queen" i]`, `[data-test*="promotion-queen" i]`,
-        `button[aria-label*="queen" i]`, `div[role="button"][aria-label*="queen" i]`,
+        `button[aria-label*="queen" i]`, `[role="button"][aria-label*="queen" i]`,
         `img[alt*="queen" i]`, `img[src*="queen" i]`, `svg[data-piece*="queen" i]`,
         `[aria-label*="hậu" i]`, `[aria-label*="dame" i]`, `[aria-label*="reina" i]`,
         `[aria-label*="dama" i]`, `[aria-label*="ferz" i]`, `[aria-label*="königin" i]`
     ];
 
-    // Direct Queen button anywhere on DOM
+    // 1. Direct Queen button anywhere on DOM
     for (const sel of queenSelectors) {
         try {
             const els = document.querySelectorAll(sel);
@@ -1387,9 +1418,11 @@ function autoClickPromotion() {
         } catch (_) {}
     }
 
-    // Promotion modal container — find Queen inside
+    // 2. Promotion modal container discovery
     const container = findPromotionModal();
     if (container) {
+        const cr = container.getBoundingClientRect();
+
         // A. Direct Queen selector inside container
         for (const sel of queenSelectors) {
             try {
@@ -1401,40 +1434,45 @@ function autoClickPromotion() {
             } catch (_) {}
         }
 
-        // B. Find candidate interactive elements inside container
-        const candidates = Array.from(container.querySelectorAll(
-            'button, [role="button"], [tabindex], svg, img, div'
-        )).filter(el => {
+        // B. Query piece buttons strictly (NO generic div)
+        const pieceButtons = Array.from(container.querySelectorAll('button, [role="button"], a[role="button"]')).filter(el => {
             if (el.closest("#dc-pill") || isForbiddenButton(el) || !isElementVisible(el)) return false;
             const r = el.getBoundingClientRect();
             return r.width >= 16 && r.height >= 16 && r.width <= 140 && r.height <= 140;
         });
 
-        if (candidates.length > 0) {
-            // Sort elements left-to-right (Queen is ALWAYS index 0, the leftmost!)
-            candidates.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-            const leftmost = candidates[0];
-            simulateFullClick(leftmost, true);
-
-            const lr = leftmost.getBoundingClientRect();
-            const cx = lr.left + lr.width / 2;
-            const cy = lr.top + lr.height / 2;
-            dispatchPointer("pointerdown", leftmost, cx, cy, 1, 0, 1);
-            dispatchPointer("pointerup", leftmost, cx, cy, 0, 0, 1);
-            dispatchPointer("click", leftmost, cx, cy, 0, 0, 1);
-            return true;
+        if (pieceButtons.length > 0) {
+            // Sort left-to-right: Queen is ALWAYS leftmost (index 0)
+            pieceButtons.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+            simulateFullClick(pieceButtons[0], true);
         }
 
-        // C. Fallback: Click the Queen zone inside container bounding rect
-        // In Duolingo's modal, Queen is horizontally in the left ~22% and vertically ~65% down
-        const cr = container.getBoundingClientRect();
-        const qx = cr.left + cr.width * 0.22;
+        // C. Query piece SVGs/images strictly
+        const pieceSvgs = Array.from(container.querySelectorAll('svg, img')).filter(el => {
+            if (el.closest("#dc-pill") || isForbiddenButton(el) || !isElementVisible(el)) return false;
+            const r = el.getBoundingClientRect();
+            return r.width >= 16 && r.height >= 16 && r.width <= 140 && r.height <= 140;
+        });
+
+        if (pieceSvgs.length > 0) {
+            pieceSvgs.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+            simulateFullClick(pieceSvgs[0], true);
+        }
+
+        // D. Exact visual coordinate targeting (Queen center: ~18% from modal left, ~65% from modal top)
+        const qx = cr.left + cr.width * 0.18;
         const qy = cr.top + cr.height * 0.65;
-        const targetEl = document.elementFromPoint(qx, qy) || container;
-        simulateFullClick(targetEl, true);
-        dispatchPointer("pointerdown", targetEl, qx, qy, 1, 0, 1);
-        dispatchPointer("pointerup", targetEl, qx, qy, 0, 0, 1);
-        dispatchPointer("click", targetEl, qx, qy, 0, 0, 1);
+        const pointEl = document.elementFromPoint(qx, qy);
+        if (pointEl && !pointEl.closest("#dc-pill") && !isForbiddenButton(pointEl)) {
+            simulateFullClick(pointEl, true);
+        }
+
+        // E. Direct canvas tap fallback at (qx, qy)
+        const canvas = findCanvas();
+        if (canvas) {
+            dispatchTap(canvas, qx, qy, 25);
+        }
+
         return true;
     }
 
@@ -1454,8 +1492,8 @@ async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
     const canvas = findCanvas();
     const sq = destSq || "d8";
 
-    for (let attempt = 0; attempt < 6; attempt++) {
-        // 1. DOM Queen Click
+    for (let attempt = 0; attempt < 8; attempt++) {
+        // 1. DOM Queen Click (multi-tier: selectors, buttons, SVGs, coordinate targeting)
         if (autoClickPromotion()) {
             await sleep(40);
             if (!findPromotionModal()) {
@@ -1480,7 +1518,7 @@ async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
             const promoQy = isTop ? (pt.y + 2.4 * sqH) : (pt.y - 2.4 * sqH);
             await dispatchTap(canvas, promoQx, promoQy, 25);
 
-            // C. Fixed board-relative Queen position (exact measurement from Duolingo screenshot: X=45.8%, Y=28.8%)
+            // C. Fixed board-relative Queen position (from measured screenshot: X=45.8%, Y=28.8%)
             const fixedQx = cr.left + cr.width * 0.458;
             const fixedQy = isTop ? (cr.top + cr.height * 0.288) : (cr.top + cr.height * 0.712);
             await dispatchTap(canvas, fixedQx, fixedQy, 25);
@@ -2329,22 +2367,27 @@ async function _autoPollLoop() {
         await sleep(POLL_MS);
 
         // ─── PRIORITY 0: Active promotion modal on screen — resolve Queen immediately! ───
-        if (findPromotionModal()) {
+        const promoModal = findPromotionModal();
+        if (promoModal) {
             autoClickPromotion();
-            _pendingPromotionSq = null;
-            continue;
+            // If the modal has been up for > 1500ms, force clear status so bot doesn't get locked in "PLAYING"
+            if (Date.now() - _lastStateChange > 1500) {
+                BOT_S.turnInProgress = false;
+                _pendingPromotionSq = null;
+                setStatus("idle");
+            }
         }
 
-        // ─── WATCHDOG 1: Clear stuck thinking/playing if hung > 2.0s ───
+        // ─── WATCHDOG 1: Clear stuck thinking/playing if hung > 3.5s ───
         if ((BOT_S.status === "thinking" || BOT_S.status === "playing" || BOT_S.turnInProgress) &&
-            (Date.now() - _lastStateChange > 2000)) {
+            (Date.now() - _lastStateChange > 3500)) {
             BOT_S.turnInProgress = false;
             _pendingPromotionSq = null;
             setStatus("idle");
         }
 
-        // ─── WATCHDOG 2: Clear stuck promotion after 1.0s ───
-        if (_pendingPromotionSq && (Date.now() - _pendingPromotionTime > 1000)) {
+        // ─── WATCHDOG 2: Clear stuck promotion after 1.5s ───
+        if (_pendingPromotionSq && (Date.now() - _pendingPromotionTime > 1500)) {
             autoClickPromotion();
             _pendingPromotionSq = null;
         }
