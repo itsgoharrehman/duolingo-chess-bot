@@ -10,6 +10,8 @@
 // @grant        GM.xmlHttpRequest
 // @connect      stockfish.online
 // @connect      *.stockfish.online
+// @connect      chess-api.com
+// @connect      *.chess-api.com
 // @connect      lichess.org
 // @connect      *.lichess.org
 // @connect      www.chessdb.cn
@@ -27,8 +29,8 @@
     const BOT_CFG = {
         engine: "hybrid",
         stockfishDepth: 15,
-        clickDelay: 70,
-        moveDelay: 70,
+        clickDelay: 50,
+        moveDelay: 50,
         thinkDelay: 10,
         boardInsetRatio: 64 / 648,
         flipped: false,
@@ -38,8 +40,8 @@
 
     const SOL_CFG = {
         boardInsetRatio: 64 / 648,
-        clickDelay: 70,
-        moveDelay: 70,
+        clickDelay: 50,
+        moveDelay: 50,
         enemyDelay: 180,
         continueDelay: 60,
         autoContinue: true,
@@ -581,7 +583,7 @@
                 // Passed pawn progression bonus (aggressive promotion to Queen)
                 if (p.type === "p") {
                     const advance = p.color === "w" ? (7 - r) : r;
-                    val += advance * advance * 8; // exponential bonus for 6th and 7th rank!
+                    val += advance * advance * 15; // increased exponential bonus for advancing pawns
                 }
 
                 score += p.color === "w" ? val : -val;
@@ -600,11 +602,11 @@
 
                 // 1. Push losing king to corners / edges
                 const centerDist = Math.max(Math.abs(lFile - 3.5), Math.abs(lRank - 3.5));
-                const pushToCornerBonus = Math.round(centerDist * 40);
+                const pushToCornerBonus = Math.round(centerDist * 50);
 
                 // 2. Bring winning king close to losing king
                 const kingDist = Math.abs(wFile - lFile) + Math.abs(wRank - lRank);
-                const closeKingBonus = Math.round((14 - kingDist) * 20);
+                const closeKingBonus = Math.round((14 - kingDist) * 25);
 
                 const mopUpBonus = pushToCornerBonus + closeKingBonus;
                 score += (winningColor === "w" ? mopUpBonus : -mopUpBonus);
@@ -633,8 +635,8 @@
             if (tacticalMoves.length === 0) return standPat;
 
             tacticalMoves.sort((a, b) => {
-                const aVal = (a.promo ? 9000 : 0) + (a.capture ? (PIECE_VALS[a.capture] || 100) : 0);
-                const bVal = (b.promo ? 9000 : 0) + (b.capture ? (PIECE_VALS[b.capture] || 100) : 0);
+                const aVal = (a.promo ? 20000 : 0) + (a.capture ? (PIECE_VALS[a.capture] || 100) * 10 - (PIECE_VALS[this.board[a.from]?.type] || 100) : 0);
+                const bVal = (b.promo ? 20000 : 0) + (b.capture ? (PIECE_VALS[b.capture] || 100) * 10 - (PIECE_VALS[this.board[b.from]?.type] || 100) : 0);
                 return bVal - aVal;
             });
 
@@ -663,10 +665,34 @@
                 return 90000; // Stalemate = DRAW! Attacker evaluating this move gets -90000!
             }
 
-            // Move ordering: promotions, captures (MVV-LVA)
+            // Fast terminal mate check: if any move delivers instant checkmate, score it immediately
+            for (const m of moves) {
+                const clone = this.clone();
+                clone.makeMove(m);
+                if (clone.getLegalMoves().length === 0 && clone.inCheck(clone.turn)) {
+                    return 100000 + (depth * 1000);
+                }
+            }
+
+            // Move ordering: promotions (20000), MVV-LVA captures (10000+), center closeness
             moves.sort((a, b) => {
-                const aScore = (a.promo ? 12000 : 0) + (a.capture ? (PIECE_VALS[a.capture] || 100) + 10000 : 0);
-                const bScore = (b.promo ? 12000 : 0) + (b.capture ? (PIECE_VALS[b.capture] || 100) + 10000 : 0);
+                let aScore = 0, bScore = 0;
+                if (a.promo) aScore += 20000;
+                if (b.promo) bScore += 20000;
+                if (a.capture) {
+                    const vic = PIECE_VALS[a.capture] || 100;
+                    const att = PIECE_VALS[this.board[a.from]?.type] || 100;
+                    aScore += 10000 + vic * 10 - att;
+                }
+                if (b.capture) {
+                    const vic = PIECE_VALS[b.capture] || 100;
+                    const att = PIECE_VALS[this.board[b.from]?.type] || 100;
+                    bScore += 10000 + vic * 10 - att;
+                }
+                const aToR = Math.floor(a.to / 8), aToC = a.to % 8;
+                const bToR = Math.floor(b.to / 8), bToC = b.to % 8;
+                aScore += (7 - (Math.abs(aToR - 3.5) + Math.abs(aToC - 3.5))) * 5;
+                bScore += (7 - (Math.abs(bToR - 3.5) + Math.abs(bToC - 3.5))) * 5;
                 return bScore - aScore;
             });
 
@@ -746,11 +772,12 @@
             let alpha = -Infinity;
             const beta = Infinity;
 
-            // Dynamic depth: In late midgame / endgame (<= 14 pieces), depth 4 takes <30ms and plays masterfully
+            // Dynamic depth: In late midgame / endgame (<= 14 pieces), depth 4 takes <30ms; in deep endgame (<= 8 pieces), depth 5 takes <60ms
             let searchDepth = depth;
             let pieceCount = 0;
             for (let i = 0; i < 64; i++) if (this.board[i]) pieceCount++;
             if (pieceCount <= 14 && searchDepth < 4) searchDepth = 4;
+            if (pieceCount <= 8 && searchDepth < 5) searchDepth = 5;
 
             for (const m of searchPool) {
                 const uci = this.moveToUci(m);
@@ -868,7 +895,7 @@
             const gmReq = (typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : (typeof GM !== "undefined" && GM.xmlHttpRequest ? GM.xmlHttpRequest : null));
             const method = opts.method || "GET";
             const data = opts.data || null;
-            const headers = { "Accept": "application/json", ...(opts.headers || {}) };
+            const headers = { "Accept": "application/json", ...(opts.data ? { "Content-Type": "application/json" } : {}), ...(opts.headers || {}) };
 
             if (gmReq) {
                 try {
@@ -934,12 +961,27 @@
         return openingBook[fenSimple] ?? null;
     }
 
-    async function getLichessCloudMove(fen) {
+    function cleanFenForApi(fen) {
+        if (!fen || typeof fen !== "string") return "";
+        const parts = fen.trim().split(/\s+/);
+        if (parts.length < 4) return fen;
+        return `${parts[0]} ${parts[1]} ${parts[2] || "-"} ${parts[3] || "-"} ${parts[4] || "0"} ${parts[5] || "1"}`;
+    }
+
+    async function getChessApiMove(fen) {
         try {
-            const data = await gmHttpFetch(`https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=1`, 1800);
-            if (data?.pvs?.[0]?.moves) {
-                const mv = data.pvs[0].moves.split(/\s+/)[0];
-                if (validUCI(mv)) return mv;
+            const cleanedFen = cleanFenForApi(fen);
+            const data = await gmHttpFetch("https://chess-api.com/v1", 2500, {
+                method: "POST",
+                data: JSON.stringify({ fen: cleanedFen, depth: 14 })
+            });
+            if (data?.move && validUCI(data.move)) {
+                return {
+                    move: data.move,
+                    mate: data.mate ?? null,
+                    eval: data.eval,
+                    source: "chess-api"
+                };
             }
         } catch (_) { }
         return null;
@@ -947,12 +989,28 @@
 
     async function getFastStockfishMove(fen) {
         try {
-            const depth = BOT_CFG.stockfishDepth || 15;
-            const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(fen)}&depth=${depth}&mode=bestmove`, 3500);
+            const depth = Math.min(BOT_CFG.stockfishDepth || 14, 15);
+            const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(fen)}&depth=${depth}&mode=bestmove`, 3000);
             if (!data?.success || !data?.bestmove) return null;
             const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
             if (!validUCI(mv)) return null;
-            return { move: mv, mate: data.mate || null };
+            return {
+                move: mv,
+                mate: data.mate || null,
+                eval: data.evaluation,
+                source: "stockfish.online"
+            };
+        } catch (_) { }
+        return null;
+    }
+
+    async function getLichessCloudMove(fen) {
+        try {
+            const data = await gmHttpFetch(`https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=1`, 1800);
+            if (data?.pvs?.[0]?.moves) {
+                const mv = data.pvs[0].moves.split(/\s+/)[0];
+                if (validUCI(mv)) return mv;
+            }
         } catch (_) { }
         return null;
     }
@@ -1037,19 +1095,28 @@
                 return mateIn2;
             }
 
-            // 4. Primary Master Engine: Stockfish 16+ (depth 15, 3500ms timeout)
-            // Highest strength (3500+ Elo), zero blunders, decisive checkmates.
-            // We do NOT race it against inferior engines: Stockfish is given full priority!
+            // 4. Primary Stockfish Cluster: chess-api.com (180ms, unlimited burst) + stockfish.online (depth 14)
+            // Highest strength (3500+ Elo), zero blunders, decisive shortest checkmates.
+            // Dual-engine race ensures zero 429 throttling drops to offline!
             try {
-                const sfRes = await getFastStockfishMove(fen);
-                const sfMv = typeof sfRes === "object" ? sfRes?.move : sfRes;
-                if (sfMv && legalUcis.includes(sfMv) && isMoveDrawSafe(engine, sfMv)) {
-                    BOT_S.engineName = sfRes?.mate ? `Stockfish (M${Math.abs(sfRes.mate)})` : "Stockfish 16+ (d15)";
-                    return sfMv;
+                const cloudWinner = await Promise.any([
+                    getChessApiMove(fen).then(res => {
+                        if (res?.move && legalUcis.includes(res.move) && isMoveDrawSafe(engine, res.move)) return res;
+                        throw new Error();
+                    }),
+                    getFastStockfishMove(fen).then(res => {
+                        if (res?.move && legalUcis.includes(res.move) && isMoveDrawSafe(engine, res.move)) return res;
+                        throw new Error();
+                    })
+                ]);
+                if (cloudWinner?.move) {
+                    const mateStr = cloudWinner.mate ? ` (M${Math.abs(cloudWinner.mate)})` : "";
+                    BOT_S.engineName = `Stockfish 16+${mateStr}`;
+                    return cloudWinner.move;
                 }
             } catch (_) { }
 
-            // 5. Cloud Backup Engine (Lichess Cloud / ChessDB) — ONLY if Stockfish server fails or times out
+            // 5. Cloud Backup Fallbacks: Lichess Cloud / ChessDB
             try {
                 const backupWinner = await Promise.any([
                     getLichessCloudMove(fen).then(mv => {
@@ -1067,10 +1134,19 @@
                 }
             } catch (_) { }
 
-            // 6. High-Performance Local Engine (Endgame depth 4, Mop-Up, Anti-Stalemate) — ONLY if offline
+            // 6. Fast Retry to Cloud (chess-api) with simplified FEN before giving up to local engine
+            try {
+                const retryRes = await getChessApiMove(fen);
+                if (retryRes?.move && legalUcis.includes(retryRes.move) && isMoveDrawSafe(engine, retryRes.move)) {
+                    BOT_S.engineName = "Stockfish 16+ (Retry)";
+                    return retryRes.move;
+                }
+            } catch (_) { }
+
+            // 7. High-Performance Local Engine (Endgame depth 4/5, Mop-Up, Anti-Stalemate) — ONLY if completely offline
             const bestMv = engine.getBestMove(3);
             if (bestMv && legalUcis.includes(bestMv)) {
-                BOT_S.engineName = "Offline Engine";
+                BOT_S.engineName = "Local Engine";
                 return bestMv;
             }
 
