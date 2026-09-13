@@ -732,13 +732,14 @@
 
             // 2. FORCED MATE-IN-2 SCAN (<5ms)
             const mateIn2 = findMateIn2(this);
-            if (mateIn2) return mateIn2;
+            if (mateIn2 && isMoveDrawSafe(this, mateIn2)) return mateIn2;
 
             // 3. SEPARATE MOVES INTO "SAFE" (non-drawing) AND "RISKY" (drawing) POOLS
             const safeMoves = [];
             const riskyMoves = [];
 
             for (const m of moves) {
+                const uci = this.moveToUci(m);
                 const clone = this.clone();
                 clone.makeMove(m);
                 const oppLegal = clone.getLegalMoves();
@@ -750,7 +751,16 @@
                 const nextKey = getPositionKey(clone.toFen());
                 const causesRepetition = (_gamePositionCounts.get(nextKey) || 0) >= 1;
 
-                if (causesStalemate || causesRepetition) {
+                // Strict: does this move immediately reverse the last bot move?
+                let isOscillation = false;
+                if (_botMoveHistory && _botMoveHistory.length > 0) {
+                    const prev = _botMoveHistory[0];
+                    if (uci.slice(0, 2) === prev.slice(2, 4) && uci.slice(2, 4) === prev.slice(0, 2)) {
+                        isOscillation = true;
+                    }
+                }
+
+                if (causesStalemate || causesRepetition || isOscillation) {
                     riskyMoves.push(m);
                 } else {
                     safeMoves.push(m);
@@ -785,18 +795,16 @@
                 clone.makeMove(m);
                 let ev = -clone.minimax(searchDepth - 1, -beta, -alpha);
 
-                // ANTI-OSCILLATION: Check last moves history
+                // Severe penalty for oscillation (piece moving back to where it just came from)
                 if (_botMoveHistory && _botMoveHistory.length > 0) {
-                    // Immediate reverse move: piece moving back to where it just came from
                     const prev = _botMoveHistory[0];
                     if (uci.slice(0, 2) === prev.slice(2, 4) && uci.slice(2, 4) === prev.slice(0, 2)) {
-                        ev -= 3000;
+                        ev -= 100000;
                     }
-                    // Multi-turn cycle: piece returning to an old square from recent turns without capture or check
                     for (let h = 1; h < Math.min(6, _botMoveHistory.length); h++) {
                         const oldMv = _botMoveHistory[h];
                         if (uci.slice(2, 4) === oldMv.slice(0, 2) && !m.capture && !clone.inCheck(clone.turn)) {
-                            ev -= 1500;
+                            ev -= 5000;
                         }
                     }
                 }
@@ -805,7 +813,7 @@
                 const nextKey = getPositionKey(clone.toFen());
                 const seenCount = _gamePositionCounts.get(nextKey) || 0;
                 if (seenCount >= 1) {
-                    ev -= 50000;
+                    ev -= 100000;
                 }
 
                 if (ev > bestVal) {
@@ -829,6 +837,9 @@
     function findMateIn2(engine) {
         const legalMoves = engine.getLegalMoves();
         for (const m1 of legalMoves) {
+            const uci1 = engine.moveToUci(m1);
+            if (!isMoveDrawSafe(engine, uci1)) continue;
+
             const clone1 = engine.clone();
             clone1.makeMove(m1);
             const oppLegal = clone1.getLegalMoves();
@@ -855,7 +866,7 @@
                 }
             }
             if (allLeadToMate) {
-                return engine.moveToUci(m1);
+                return uci1;
             }
         }
         return null;
@@ -1028,7 +1039,7 @@
 
     /**
      * Validate a cloud/external move against draw-prevention rules.
-     * Returns true if the move is SAFE (no stalemate, no 3-fold repetition).
+     * Returns true if the move is SAFE (no stalemate, no repetition, no oscillation).
      */
     function isMoveDrawSafe(engine, moveUci) {
         try {
@@ -1036,16 +1047,41 @@
             const from = engine._sqToIdx(moveUci.slice(0, 2));
             const to = engine._sqToIdx(moveUci.slice(2, 4));
             const promo = moveUci.length >= 5 ? moveUci[4] : null;
-            clone.makeMove({ from, to, promo });
+
+            const legals = clone.getLegalMoves();
+            const matchLegal = legals.find(m => clone.moveToUci(m) === moveUci);
+            if (matchLegal) {
+                clone.makeMove(matchLegal);
+            } else {
+                clone.makeMove({ from, to, promo });
+            }
             const oppLegal = clone.getLegalMoves();
-            // Strict: NEVER allow a stalemate move (opponent has 0 moves without check)
+
+            // 1. Strict: NEVER allow a stalemate move (opponent has 0 moves without check)
             const isStalemate = oppLegal.length === 0 && !clone.inCheck(clone.turn);
             if (isStalemate) return false;
 
-            // Strict: NEVER allow a move that causes 3-fold repetition (count >= 2)
+            // 2. Strict: NEVER allow a move that leads to ANY position already seen (count >= 1)
+            // Banning any position seen 1+ times completely eliminates 2nd repetitions,
+            // making 3-fold repetition 100% mathematically impossible!
             const nextKey = getPositionKey(clone.toFen());
-            const isRepetition = (_gamePositionCounts.get(nextKey) || 0) >= 2;
-            if (isRepetition) return false;
+            if ((_gamePositionCounts.get(nextKey) || 0) >= 1) return false;
+
+            // 3. Strict: Anti-oscillation — NEVER immediately reverse the last bot move
+            if (_botMoveHistory && _botMoveHistory.length > 0) {
+                const prev = _botMoveHistory[0];
+                if (moveUci.slice(0, 2) === prev.slice(2, 4) && moveUci.slice(2, 4) === prev.slice(0, 2)) {
+                    return false;
+                }
+            }
+
+            // 4. Strict: 2-step oscillation prevention — piece returning to square from 2 moves ago without capture or check
+            if (_botMoveHistory && _botMoveHistory.length > 1) {
+                const prev2 = _botMoveHistory[1];
+                if (moveUci.slice(0, 2) === prev2.slice(2, 4) && moveUci.slice(2, 4) === prev2.slice(0, 2)) {
+                    if (!clone.inCheck(clone.turn)) return false;
+                }
+            }
 
             return true;
         } catch (_) {
@@ -1145,14 +1181,18 @@
 
             // 7. High-Performance Local Engine (Endgame depth 4/5, Mop-Up, Anti-Stalemate) — ONLY if completely offline
             const bestMv = engine.getBestMove(3);
-            if (bestMv && legalUcis.includes(bestMv)) {
+            if (bestMv && legalUcis.includes(bestMv) && isMoveDrawSafe(engine, bestMv)) {
                 BOT_S.engineName = "Local Engine";
                 return bestMv;
             }
 
             // Absolute last resort (safe legal move)
             const safeFallback = legalUcis.find(u => isMoveDrawSafe(engine, u));
-            return safeFallback || legalUcis[0];
+            if (safeFallback) {
+                BOT_S.engineName = "Local Engine (Safe)";
+                return safeFallback;
+            }
+            return legalUcis[0];
         } catch (_) {
             try {
                 const fallback = new FastChess(fen);
@@ -1919,6 +1959,25 @@
             _botMoveHistory.unshift(move);
             if (_botMoveHistory.length > 8) _botMoveHistory.pop();
 
+            // Immediately register the resulting position in _gamePositionCounts so it cannot be repeated!
+            try {
+                const gameAfter = new FastChess(startFen);
+                const legals = gameAfter.getLegalMoves();
+                const mObj = legals.find(m => gameAfter.moveToUci(m) === move);
+                if (mObj) {
+                    gameAfter.makeMove(mObj);
+                } else {
+                    const fromIdx = gameAfter._sqToIdx(move.slice(0, 2));
+                    const toIdx = gameAfter._sqToIdx(move.slice(2, 4));
+                    const promoType = move.length >= 5 ? move[4] : null;
+                    gameAfter.makeMove({ from: fromIdx, to: toIdx, promo: promoType });
+                }
+                const afterKey = getPositionKey(gameAfter.toFen());
+                if (afterKey) {
+                    _gamePositionCounts.set(afterKey, (_gamePositionCounts.get(afterKey) || 0) + 1);
+                }
+            } catch (_) { }
+
             const flip = BOT_CFG.flipped || (BOT_S.playerColor || "").toLowerCase() === "black";
 
             // Execute the move ONCE — clean single tap per square
@@ -2214,34 +2273,36 @@
 
     let _panel = null;
 
+    const SVG_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor" style="margin-left:1px"><polygon points="6 4 20 12 6 20 6 4"></polygon></svg>';
+    const SVG_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect></svg>';
+    const SVG_MATCH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>';
+
     const STYLE = `
 #dc-dock {
     position: fixed;
-    bottom: 18px;
-    right: 18px;
+    bottom: 16px;
+    right: 16px;
     z-index: 2147483647;
     display: inline-flex;
     align-items: center;
     background: #18181b;
     border: 1px solid #27272a;
-    border-radius: 20px;
-    padding: 3px 4px;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+    border-radius: 14px;
+    padding: 2px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
     user-select: none;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 .dc-btn {
-    width: 28px;
-    height: 28px;
+    width: 22px;
+    height: 22px;
     border-radius: 50%;
     border: none;
     cursor: pointer;
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 12px;
-    line-height: 1;
     transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
     outline: none;
     padding: 0;
@@ -2250,12 +2311,19 @@
     flex-shrink: 0;
 }
 
+.dc-btn svg {
+    width: 10px;
+    height: 10px;
+    display: block;
+    pointer-events: none;
+}
+
 .dc-btn:hover {
     filter: brightness(1.2);
 }
 
 .dc-btn:active {
-    transform: scale(0.92);
+    transform: scale(0.9);
 }
 
 /* Calm solid matte colors — no stinging neons, no glassmorphism */
@@ -2278,17 +2346,17 @@
 }
 
 #dc-engine-box {
-    padding: 0 10px;
+    padding: 0 7px;
     display: flex;
     align-items: center;
     justify-content: center;
-    min-width: 90px;
-    max-width: 180px;
+    min-width: 75px;
+    max-width: 160px;
 }
 
 #dc-engine-name {
     color: #d4d4d8;
-    font-size: 11.5px;
+    font-size: 10.5px;
     font-weight: 600;
     letter-spacing: 0.2px;
     white-space: nowrap;
@@ -2314,11 +2382,15 @@
         _panel.id = "dc-dock";
 
         _panel.innerHTML = `
-            <button id="dc-tg-play" class="dc-btn ${BOT_CFG.autoPlay ? 'active' : 'off'}" title="${BOT_CFG.autoPlay ? 'Auto Play: ON' : 'Auto Play: OFF'}">${BOT_CFG.autoPlay ? '▶' : '⏸'}</button>
+            <button id="dc-tg-play" class="dc-btn ${BOT_CFG.autoPlay ? 'active' : 'off'}" title="${BOT_CFG.autoPlay ? 'Auto Play: ON' : 'Auto Play: OFF'}">
+                ${BOT_CFG.autoPlay ? SVG_PLAY : SVG_PAUSE}
+            </button>
             <div id="dc-engine-box">
                 <span id="dc-engine-name">${esc(BOT_S.engineName || "Stockfish 16+")}</span>
             </div>
-            <button id="dc-tg-match" class="dc-btn ${BOT_CFG.autoMatch ? 'active' : 'off'}" title="${BOT_CFG.autoMatch ? 'Auto Match: ON' : 'Auto Match: OFF'}">↻</button>
+            <button id="dc-tg-match" class="dc-btn ${BOT_CFG.autoMatch ? 'active' : 'off'}" title="${BOT_CFG.autoMatch ? 'Auto Match: ON' : 'Auto Match: OFF'}">
+                ${SVG_MATCH}
+            </button>
         `;
 
         document.body.appendChild(_panel);
@@ -2357,12 +2429,12 @@
         }
         if (tgPlay) {
             tgPlay.className = `dc-btn ${BOT_CFG.autoPlay ? 'active' : 'off'}`;
-            tgPlay.textContent = BOT_CFG.autoPlay ? "▶" : "⏸";
+            tgPlay.innerHTML = BOT_CFG.autoPlay ? SVG_PLAY : SVG_PAUSE;
             tgPlay.title = BOT_CFG.autoPlay ? "Auto Play: ON" : "Auto Play: OFF";
         }
         if (tgMatch) {
             tgMatch.className = `dc-btn ${BOT_CFG.autoMatch ? 'active' : 'off'}`;
-            tgMatch.textContent = "↻";
+            tgMatch.innerHTML = SVG_MATCH;
             tgMatch.title = BOT_CFG.autoMatch ? "Auto Match: ON" : "Auto Match: OFF";
         }
     }
