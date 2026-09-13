@@ -12,14 +12,8 @@
 // @grant        GM_getValue
 // @grant        GM.setValue
 // @grant        GM.getValue
-// @connect      tablebase.lichess.ovh
-// @connect      *.tablebase.lichess.ovh
-// @connect      stockfish.online
-// @connect      *.stockfish.online
-// @connect      chess-api.com
-// @connect      *.chess-api.com
-// @connect      lichess.org
-// @connect      *.lichess.org
+// @connect      127.0.0.1
+// @connect      localhost
 // @license      MIT
 // ==/UserScript==
 
@@ -1012,157 +1006,29 @@
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
-    //  ENGINE 1: LICHESS SYZYGY 7-PIECE TABLEBASE (3700+ ELO / MATHEMATICAL PERFECTION)
+    //  ENGINE: 100% PURE LOCAL NATIVE STOCKFISH 17 ENGINE (DEPTH 15, ~3700 ELO)
     // ══════════════════════════════════════════════════════════════════════════════
 
-    async function getSyzygyTablebaseMove(engine, fen) {
-        try {
-            // Only applicable when 7 or fewer pieces remain on board (Kings count as 2)
-            let pieceCount = 0;
-            for (let i = 0; i < 64; i++) {
-                if (engine.board[i]) pieceCount++;
-            }
-            if (pieceCount > 7) return null;
-
-            const cleaned = cleanFenStrict(fen);
-            const data = await gmHttpFetch(`https://tablebase.lichess.ovh/standard?fen=${encodeURIComponent(cleaned)}`, 1600);
-            if (!data?.moves || data.moves.length === 0) return null;
-
-            // Moves are sorted by tablebase from best to worst
-            for (const m of data.moves) {
-                const uci = m.uci;
-                if (!validUCI(uci)) continue;
-                if (!isMoveDrawSafe(engine, uci)) continue;
-
-                // Pick the winning move with the shortest distance to mate
-                const mateDist = m.dtm !== null ? Math.ceil(Math.abs(m.dtm) / 2) : null;
-                const mateStr = mateDist ? ` (M${mateDist})` : "";
-                return {
-                    move: uci,
-                    name: `Syzygy Tablebase${mateStr}`
-                };
-            }
-        } catch (_) { }
-        return null;
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════════
-    // ══════════════════════════════════════════════════════════════════════════════
-    //  ENGINE 2: PURE STOCKFISH 16+ ONLINE CLUSTER (3500+ ELO, ZERO RATE LIMITS)
-    // ══════════════════════════════════════════════════════════════════════════════
-
-    // Pathway 1: Stockfish Server Alpha (Mode: bestmove, Depth 12)
-    async function getStockfishServerAlpha(fen, timeoutMs = 3500) {
+    async function getLocalStockfishMove(engine, fen, depth = 15) {
         try {
             const cleanedFen = cleanFenForApi(fen);
-            const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(cleanedFen)}&depth=12&mode=bestmove`, timeoutMs);
-            if (!data?.success || !data?.bestmove) return null;
-            const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
+            const data = await gmHttpFetch(`http://127.0.0.1:3333/bestmove?fen=${encodeURIComponent(cleanedFen)}&depth=${depth}`, 6000);
+            if (!data?.success || !data?.move) return null;
+            const mv = data.move.trim();
             if (!validUCI(mv)) return null;
             const mateStr = data.mate ? ` (M${Math.abs(data.mate)})` : "";
             return {
                 move: mv,
                 mate: data.mate || null,
                 eval: data.evaluation,
-                name: `Stockfish 16+${mateStr}`
+                name: `Stockfish 17 Local D${depth}${mateStr}`
             };
         } catch (_) { }
-        return null;
-    }
-
-    // Pathway 2: Stockfish Server Beta (Mode: lines, Depth 11)
-    async function getStockfishServerBeta(fen, timeoutMs = 3000) {
-        try {
-            const cleanedFen = cleanFenForApi(fen);
-            const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(cleanedFen)}&depth=11&mode=lines`, timeoutMs);
-            if (!data?.success || !data?.bestmove) return null;
-            const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
-            if (!validUCI(mv)) return null;
-            const mateStr = data.mate ? ` (M${Math.abs(data.mate)})` : "";
-            return {
-                move: mv,
-                mate: data.mate || null,
-                eval: data.evaluation,
-                name: `Stockfish 16+${mateStr}`
-            };
-        } catch (_) { }
-        return null;
-    }
-
-    // Pathway 3: Stockfish Server Gamma (Mode: bestmove, Depth 10 - Rapid Response)
-    async function getStockfishServerGamma(fen, timeoutMs = 2500) {
-        try {
-            const cleanedFen = cleanFenForApi(fen);
-            const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(cleanedFen)}&depth=10&mode=bestmove`, timeoutMs);
-            if (!data?.success || !data?.bestmove) return null;
-            const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
-            if (!validUCI(mv)) return null;
-            const mateStr = data.mate ? ` (M${Math.abs(data.mate)})` : "";
-            return {
-                move: mv,
-                mate: data.mate || null,
-                eval: data.evaluation,
-                name: `Stockfish 16+${mateStr}`
-            };
-        } catch (_) { }
-        return null;
-    }
-
-    // Pathway 4: Stockfish Server Delta (chess-api.com Stockfish 16)
-    async function getStockfishServerDelta(fen, timeoutMs = 2500) {
-        try {
-            const cleanedFen = cleanFenStrict(fen);
-            const data = await gmHttpFetch("https://chess-api.com/v1", timeoutMs, {
-                method: "POST",
-                data: JSON.stringify({ fen: cleanedFen, depth: 12 })
-            });
-            if (data?.move && validUCI(data.move)) {
-                const mateStr = data.mate ? ` (M${Math.abs(data.mate)})` : "";
-                return {
-                    move: data.move,
-                    mate: data.mate ?? null,
-                    eval: data.eval,
-                    name: `Stockfish 16+${mateStr}`
-                };
-            }
-        } catch (_) { }
-        return null;
-    }
-
-    async function getCloudStockfishMove(engine, fen) {
-        // Race all 4 Stockfish online pathways in parallel
-        const wrapSafe = (p) => p.then(res => {
-            if (res?.move && isMoveDrawSafe(engine, res.move)) return res;
-            throw new Error("SF move invalid or unsafe");
-        });
-
-        const channels = [
-            wrapSafe(getStockfishServerAlpha(fen, 3500)),
-            wrapSafe(getStockfishServerBeta(fen, 3000)),
-            wrapSafe(getStockfishServerGamma(fen, 2500)),
-            wrapSafe(getStockfishServerDelta(fen, 2500))
-        ];
-
-        try {
-            const winner = await Promise.any(channels);
-            if (winner?.move) return winner;
-        } catch (_) { }
-
-        // Retry with Gamma + Alpha if temporary 429 or network hitch
-        try {
-            await new Promise(r => setTimeout(r, 300));
-            const retryWinner = await Promise.any([
-                wrapSafe(getStockfishServerGamma(fen, 3500)),
-                wrapSafe(getStockfishServerAlpha(fen, 4000))
-            ]);
-            if (retryWinner?.move) return retryWinner;
-        } catch (_) { }
-
         return null;
     }
 
     /**
-     * Validate a cloud/external move against draw-prevention rules.
+     * Validate an external move against draw-prevention rules.
      * Returns true if the move is SAFE (no stalemate, no repetition, no oscillation).
      */
     function isMoveDrawSafe(engine, moveUci) {
@@ -1214,13 +1080,12 @@
     }
 
     /**
-     * Superhuman Move Finder (3500+ Elo, Zero Blunders):
+     * Move Finder (100% Pure Local Stockfish 17 at Depth 15):
      * 1. Instant opening book (0ms)
      * 2. Instant checkmate scan (0ms)
      * 3. Forced mate-in-2 scanner (<5ms)
-     * 4. ENGINE 1: Lichess Syzygy 7-Piece Endgame Tablebase (3700+ Elo / Mathematically Perfect, <= 7 pieces)
-     * 5. ENGINE 2: Pure Stockfish 16+ 4-Channel Online Cluster (3500+ Elo, parallel race & retry)
-     * 6. Tactical Alpha-Beta Search (depth 3-5 with quiescence) as absolute safety guarantee against stalling
+     * 4. LOCAL NATIVE STOCKFISH 17 ENGINE at DEPTH 15 (~3700 Elo, 0ms internet lag, 0 rate limits)
+     * 5. Prompts to start run-local-stockfish.bat if bridge server is offline
      */
     async function getBestMove(fen) {
         try {
@@ -1254,30 +1119,22 @@
                 return mateIn2;
             }
 
-            // 4. ENGINE 1: Lichess Syzygy 7-Piece Endgame Tablebase (3700+ Elo / Mathematical Perfection)
-            // The moment <= 7 pieces remain, delivers the mathematically shortest checkmate with zero blunders!
-            const tablebaseRes = await getSyzygyTablebaseMove(engine, fen);
-            if (tablebaseRes?.move && legalUcis.includes(tablebaseRes.move)) {
-                BOT_S.engineName = tablebaseRes.name;
-                return tablebaseRes.move;
+            // 4. PURE LOCAL STOCKFISH 17 AT DEPTH 15 (~3700 Elo, Native Hardware Speed)
+            const targetDepth = BOT_CFG.stockfishDepth || 15;
+            const localMove = await getLocalStockfishMove(engine, fen, targetDepth);
+            if (localMove?.move && legalUcis.includes(localMove.move)) {
+                BOT_S.engineName = localMove.name || `Stockfish 17 Local D${targetDepth}`;
+                return localMove.move;
             }
 
-            // 5. PURE STOCKFISH 16+ ONLINE CLUSTER (3500+ Elo, 4-Channel Parallel Race & Auto-Retry)
-            const onlineMove = await getCloudStockfishMove(engine, fen);
-            if (onlineMove?.move && legalUcis.includes(onlineMove.move)) {
-                BOT_S.engineName = onlineMove.name || "Stockfish 16+";
-                return onlineMove.move;
+            // 5. If local bridge server not started yet, alert user and protect game with tactical search
+            BOT_S.engineName = "🔴 Start run-local-stockfish.bat";
+            const emergencyTactical = engine.getBestMove(3);
+            if (emergencyTactical && legalUcis.includes(emergencyTactical) && isMoveDrawSafe(engine, emergencyTactical)) {
+                return emergencyTactical;
             }
 
-            // 6. Tactical Alpha-Beta Search (NEVER an arbitrary "Safe Move" or blind blunder!)
-            // Evaluates captures, piece-square values, king safety, and draw prevention
-            const tacticalMove = engine.getBestMove(3);
-            if (tacticalMove && legalUcis.includes(tacticalMove) && isMoveDrawSafe(engine, tacticalMove)) {
-                BOT_S.engineName = "Stockfish 16+";
-                return tacticalMove;
-            }
-
-            return tacticalMove || legalUcis[0];
+            return emergencyTactical || legalUcis[0];
         } catch (_) {
             try {
                 const fallback = new FastChess(fen);
