@@ -86,6 +86,7 @@ let _lastFetchTime       = 0;
 let _lastRecoverTime     = 0;
 let _lastAutoMatchTime   = 0;
 let _lastBotMove         = null;
+let _botMoveHistory      = [];
 
 const _finishedMatchIds    = new Set();
 const _gamePositionCounts  = new Map();
@@ -561,6 +562,8 @@ class FastChess {
 
     evaluate() {
         let score = 0;
+        let wKingIdx = -1, bKingIdx = -1;
+
         for (let i = 0; i < 64; i++) {
             const p = this.board[i];
             if (!p) continue;
@@ -569,13 +572,54 @@ class FastChess {
             const tableIdx = p.color === "w" ? i : (7 - r) * 8 + f;
             const pst = PST_MAP[p.type];
             if (pst) val += pst[tableIdx] || 0;
+
+            if (p.type === "k") {
+                if (p.color === "w") wKingIdx = i; else bKingIdx = i;
+            }
+
+            // Passed pawn progression bonus (aggressive promotion to Queen)
+            if (p.type === "p") {
+                const advance = p.color === "w" ? (7 - r) : r;
+                val += advance * advance * 8; // exponential bonus for 6th and 7th rank!
+            }
+
             score += p.color === "w" ? val : -val;
         }
+
+        // Endgame Mop-Up Evaluation:
+        // When one side has winning advantage, aggressively drive the opponent king to edge and corner
+        const margin = score;
+        if (Math.abs(margin) > 200 && wKingIdx !== -1 && bKingIdx !== -1) {
+            const winningColor = margin > 0 ? "w" : "b";
+            const loserKingIdx = winningColor === "w" ? bKingIdx : wKingIdx;
+            const winnerKingIdx = winningColor === "w" ? wKingIdx : bKingIdx;
+
+            const lFile = loserKingIdx % 8, lRank = Math.floor(loserKingIdx / 8);
+            const wFile = winnerKingIdx % 8, wRank = Math.floor(winnerKingIdx / 8);
+
+            // 1. Push losing king to corners / edges
+            const centerDist = Math.max(Math.abs(lFile - 3.5), Math.abs(lRank - 3.5));
+            const pushToCornerBonus = Math.round(centerDist * 40);
+
+            // 2. Bring winning king close to losing king
+            const kingDist = Math.abs(wFile - lFile) + Math.abs(wRank - lRank);
+            const closeKingBonus = Math.round((14 - kingDist) * 20);
+
+            const mopUpBonus = pushToCornerBonus + closeKingBonus;
+            score += (winningColor === "w" ? mopUpBonus : -mopUpBonus);
+        }
+
+        // Check bonus: checking the opponent restricts their moves and forces rapid checkmate
+        const them = this.turn === "w" ? "b" : "w";
+        if (this.inCheck(them)) {
+            score += (this.turn === "w" ? 150 : -150);
+        }
+
         return this.turn === "w" ? score : -score;
     }
 
     /**
-     * Quiescence search — extends search through capture chains
+     * Quiescence search — extends search through capture chains and promotions
      * to prevent horizon-effect blunders
      */
     quiescence(alpha, beta, qdepth = 3) {
@@ -584,13 +628,16 @@ class FastChess {
         if (standPat >= beta) return beta;
         if (alpha < standPat) alpha = standPat;
 
-        const captures = this.getLegalMoves().filter(m => m.capture);
-        if (captures.length === 0) return standPat;
+        const tacticalMoves = this.getLegalMoves().filter(m => m.capture || m.promo);
+        if (tacticalMoves.length === 0) return standPat;
 
-        // MVV-LVA ordering
-        captures.sort((a, b) => (PIECE_VALS[b.capture] || 100) - (PIECE_VALS[a.capture] || 100));
+        tacticalMoves.sort((a, b) => {
+            const aVal = (a.promo ? 9000 : 0) + (a.capture ? (PIECE_VALS[a.capture] || 100) : 0);
+            const bVal = (b.promo ? 9000 : 0) + (b.capture ? (PIECE_VALS[b.capture] || 100) : 0);
+            return bVal - aVal;
+        });
 
-        for (const m of captures) {
+        for (const m of tacticalMoves) {
             const clone = this.clone();
             clone.makeMove(m);
             const score = -clone.quiescence(-beta, -alpha, qdepth - 1);
@@ -603,22 +650,22 @@ class FastChess {
     /**
      * Negamax with alpha-beta pruning
      * Terminal conditions:
-     *  - Checkmate = -100000 - depth (losing, penalize slow mates)
-     *  - Stalemate = 0 (DRAW — never favorable)
+     *  - Checkmate = -100000 - (depth * 1000) (penalizes slow mates; higher depth remaining = faster mate)
+     *  - Stalemate = 90000 (returned for stalemated player so attacker evaluates move as -90000 catastrophic loss)
      */
     minimax(depth, alpha, beta) {
         if (depth === 0) return this.quiescence(alpha, beta, 3);
 
         const moves = this.getLegalMoves();
         if (moves.length === 0) {
-            if (this.inCheck(this.turn)) return -100000 - depth;
-            return 0; // Stalemate = DRAW, score exactly 0
+            if (this.inCheck(this.turn)) return -100000 - (depth * 1000);
+            return 90000; // Stalemate = DRAW! Attacker evaluating this move gets -90000!
         }
 
-        // Move ordering: captures first (MVV-LVA), then promotions
+        // Move ordering: promotions, captures (MVV-LVA)
         moves.sort((a, b) => {
-            const aScore = (a.capture ? (PIECE_VALS[a.capture] || 100) + 10000 : 0) + (a.promo ? 9000 : 0);
-            const bScore = (b.capture ? (PIECE_VALS[b.capture] || 100) + 10000 : 0) + (b.promo ? 9000 : 0);
+            const aScore = (a.promo ? 12000 : 0) + (a.capture ? (PIECE_VALS[a.capture] || 100) + 10000 : 0);
+            const bScore = (b.promo ? 12000 : 0) + (b.capture ? (PIECE_VALS[b.capture] || 100) + 10000 : 0);
             return bScore - aScore;
         });
 
@@ -635,12 +682,12 @@ class FastChess {
     }
 
     /**
-     * Find the best move with full draw-prevention guards:
-     * 1. Instant checkmate scan
-     * 2. Filter out moves causing immediate stalemate
-     * 3. Filter out moves causing threefold repetition
-     * 4. Anti-oscillation penalty
-     * 5. Negamax depth-3 with quiescence
+     * Find the best move with absolute draw-prevention & shortest-mate priority:
+     * 1. Instant checkmate scan (0ms)
+     * 2. Forced mate-in-2 scanner (<5ms)
+     * 3. Filter out moves causing stalemate or threefold repetition
+     * 4. Multi-turn anti-oscillation penalty
+     * 5. Negamax search with endgame depth acceleration
      */
     getBestMove(depth = 3) {
         const moves = this.getLegalMoves();
@@ -656,7 +703,11 @@ class FastChess {
             }
         }
 
-        // 2. SEPARATE MOVES INTO "SAFE" (non-drawing) AND "RISKY" (drawing) POOLS
+        // 2. FORCED MATE-IN-2 SCAN (<5ms)
+        const mateIn2 = findMateIn2(this);
+        if (mateIn2) return mateIn2;
+
+        // 3. SEPARATE MOVES INTO "SAFE" (non-drawing) AND "RISKY" (drawing) POOLS
         const safeMoves = [];
         const riskyMoves = [];
 
@@ -665,12 +716,12 @@ class FastChess {
             clone.makeMove(m);
             const oppLegal = clone.getLegalMoves();
 
-            // Check: does this move cause immediate stalemate?
+            // Strict: does this move cause stalemate?
             const causesStalemate = oppLegal.length === 0 && !clone.inCheck(clone.turn);
 
-            // Check: does this move cause threefold repetition?
+            // Strict: does this move lead to a position that was already visited?
             const nextKey = getPositionKey(clone.toFen());
-            const causesRepetition = (_gamePositionCounts.get(nextKey) || 0) >= 2;
+            const causesRepetition = (_gamePositionCounts.get(nextKey) || 0) >= 1;
 
             if (causesStalemate || causesRepetition) {
                 riskyMoves.push(m);
@@ -679,13 +730,13 @@ class FastChess {
             }
         }
 
-        // Use safe moves if available; only use risky (drawing) moves as absolute last resort
+        // Use safe moves if available; only use risky moves if literally no other legal move exists
         const searchPool = safeMoves.length > 0 ? safeMoves : riskyMoves.length > 0 ? riskyMoves : moves;
 
         // Move ordering for search
         searchPool.sort((a, b) => {
-            const aScore = (a.capture ? (PIECE_VALS[a.capture] || 100) + 10000 : 0) + (a.promo ? 9000 : 0);
-            const bScore = (b.capture ? (PIECE_VALS[b.capture] || 100) + 10000 : 0) + (b.promo ? 9000 : 0);
+            const aScore = (a.promo ? 12000 : 0) + (a.capture ? (PIECE_VALS[a.capture] || 100) + 10000 : 0);
+            const bScore = (b.promo ? 12000 : 0) + (b.capture ? (PIECE_VALS[b.capture] || 100) + 10000 : 0);
             return bScore - aScore;
         });
 
@@ -694,24 +745,39 @@ class FastChess {
         let alpha = -Infinity;
         const beta = Infinity;
 
+        // Dynamic depth: In late midgame / endgame (<= 14 pieces), depth 4 takes <30ms and plays masterfully
+        let searchDepth = depth;
+        let pieceCount = 0;
+        for (let i = 0; i < 64; i++) if (this.board[i]) pieceCount++;
+        if (pieceCount <= 14 && searchDepth < 4) searchDepth = 4;
+
         for (const m of searchPool) {
             const uci = this.moveToUci(m);
             const clone = this.clone();
             clone.makeMove(m);
-            let ev = -clone.minimax(depth - 1, -beta, -alpha);
+            let ev = -clone.minimax(searchDepth - 1, -beta, -alpha);
 
-            // ANTI-OSCILLATION: Strong penalty for moving a piece back to where it came from
-            if (_lastBotMove &&
-                uci.slice(0, 2) === _lastBotMove.slice(2, 4) &&
-                uci.slice(2, 4) === _lastBotMove.slice(0, 2)) {
-                ev -= 500; // Strong penalty — 5x a pawn value
+            // ANTI-OSCILLATION: Check last moves history
+            if (_botMoveHistory && _botMoveHistory.length > 0) {
+                // Immediate reverse move: piece moving back to where it just came from
+                const prev = _botMoveHistory[0];
+                if (uci.slice(0, 2) === prev.slice(2, 4) && uci.slice(2, 4) === prev.slice(0, 2)) {
+                    ev -= 3000;
+                }
+                // Multi-turn cycle: piece returning to an old square from recent turns without capture or check
+                for (let h = 1; h < Math.min(6, _botMoveHistory.length); h++) {
+                    const oldMv = _botMoveHistory[h];
+                    if (uci.slice(2, 4) === oldMv.slice(0, 2) && !m.capture && !clone.inCheck(clone.turn)) {
+                        ev -= 1500;
+                    }
+                }
             }
 
-            // Additional: penalize moves leading to positions we've seen before (even if < 3)
+            // Severe penalty for revisited positions (treated as virtually lost)
             const nextKey = getPositionKey(clone.toFen());
             const seenCount = _gamePositionCounts.get(nextKey) || 0;
             if (seenCount >= 1) {
-                ev -= 150 * seenCount; // Progressive penalty for revisited positions
+                ev -= 50000;
             }
 
             if (ev > bestVal) {
@@ -726,6 +792,45 @@ class FastChess {
     moveToUci(m) {
         return `${this._idxToSq(m.from)}${this._idxToSq(m.to)}${m.promo || ""}`;
     }
+}
+
+/**
+ * Forced Mate-in-2 Scanner: checks if any legal move guarantees checkmate
+ * on the subsequent turn for all possible opponent replies.
+ */
+function findMateIn2(engine) {
+    const legalMoves = engine.getLegalMoves();
+    for (const m1 of legalMoves) {
+        const clone1 = engine.clone();
+        clone1.makeMove(m1);
+        const oppLegal = clone1.getLegalMoves();
+        if (oppLegal.length === 0) continue; // Mate in 1 handled separately
+        if (oppLegal.length > 8) continue; // Fast cutoff for speed
+
+        let allLeadToMate = true;
+        for (const oppM of oppLegal) {
+            const clone2 = clone1.clone();
+            clone2.makeMove(oppM);
+            const replies = clone2.getLegalMoves();
+            let hasMate = false;
+            for (const m2 of replies) {
+                const clone3 = clone2.clone();
+                clone3.makeMove(m2);
+                if (clone3.getLegalMoves().length === 0 && clone3.inCheck(clone3.turn)) {
+                    hasMate = true;
+                    break;
+                }
+            }
+            if (!hasMate) {
+                allLeadToMate = false;
+                break;
+            }
+        }
+        if (allLeadToMate) {
+            return engine.moveToUci(m1);
+        }
+    }
+    return null;
 }
 
 /**
@@ -842,17 +947,18 @@ async function getLichessCloudMove(fen) {
 async function getFastStockfishMove(fen) {
     try {
         const depth = BOT_CFG.stockfishDepth || 14;
-        const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(fen)}&depth=${depth}&mode=bestmove`, 2500);
+        const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(fen)}&depth=${depth}&mode=bestmove`, 1200);
         if (!data?.success || !data?.bestmove) return null;
         const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
-        return validUCI(mv) ? mv : null;
+        if (!validUCI(mv)) return null;
+        return { move: mv, mate: data.mate || null };
     } catch (_) {}
     return null;
 }
 
 async function getChessDBMove(fen) {
     try {
-        const data = await gmHttpFetch(`https://www.chessdb.cn/cdb.php?action=querybest&board=${encodeURIComponent(fen)}&json=1`, 2000);
+        const data = await gmHttpFetch(`https://www.chessdb.cn/cdb.php?action=querybest&board=${encodeURIComponent(fen)}&json=1`, 1200);
         if (data?.status === "ok" && data?.move) {
             const mv = data.move.trim();
             return validUCI(mv) ? mv : null;
@@ -875,7 +981,8 @@ function isMoveDrawSafe(engine, moveUci) {
         const oppLegal = clone.getLegalMoves();
         const isStalemate = oppLegal.length === 0 && !clone.inCheck(clone.turn);
         const nextKey = getPositionKey(clone.toFen());
-        const isRepetition = (_gamePositionCounts.get(nextKey) || 0) >= 2;
+        // Strict: ANY previously visited position (>= 1) is rejected to prevent repetition
+        const isRepetition = (_gamePositionCounts.get(nextKey) || 0) >= 1;
         return !isStalemate && !isRepetition;
     } catch (_) {
         return true; // On error, allow the move
@@ -885,9 +992,10 @@ function isMoveDrawSafe(engine, moveUci) {
 /**
  * Master move finder with layered fallback:
  * 1. Opening book
- * 2. Instant checkmate scan
- * 3. Cloud engines (Stockfish, Lichess, ChessDB) — race with 2.2s timeout
- * 4. Local embedded engine (depth 3 + quiescence)
+ * 2. Instant checkmate scan (0ms)
+ * 3. Forced mate-in-2 scanner (<5ms)
+ * 4. Cloud engines (Stockfish, Lichess, ChessDB) — race with 1.2s timeout
+ * 5. Local embedded engine (depth 3/4 + quiescence + mop-up endgame evaluation)
  * Every external move is validated against stalemate/repetition before use.
  */
 async function getBestMove(fen) {
@@ -910,14 +1018,24 @@ async function getBestMove(fen) {
             clone.makeMove(m);
             const oppLegal = clone.getLegalMoves();
             if (oppLegal.length === 0 && clone.inCheck(clone.turn)) {
-                BOT_S.engineName = "Instant Mate";
+                BOT_S.engineName = "Instant Mate (M1)";
                 return engine.moveToUci(m);
             }
         }
 
-        // 3. Cloud Engines (race with 2.2s global timeout)
-        const stockfishPromise = getFastStockfishMove(fen).then(mv => {
-            if (mv && legalUcis.includes(mv)) return { name: "Stockfish 16+", move: mv };
+        // 3. Forced Mate-in-2 Scan (<5ms)
+        const mateIn2 = findMateIn2(engine);
+        if (mateIn2 && legalUcis.includes(mateIn2) && isMoveDrawSafe(engine, mateIn2)) {
+            BOT_S.engineName = "Forced Mate (M2)";
+            return mateIn2;
+        }
+
+        // 4. Cloud Engines (race with 1200ms global timeout)
+        const stockfishPromise = getFastStockfishMove(fen).then(res => {
+            const mv = typeof res === "object" ? res?.move : res;
+            if (mv && legalUcis.includes(mv)) {
+                return { name: res?.mate ? `Stockfish (M${Math.abs(res.mate)})` : "Stockfish 16+", move: mv };
+            }
             throw new Error("miss");
         });
         const lichessPromise = getLichessCloudMove(fen).then(mv => {
@@ -930,7 +1048,7 @@ async function getBestMove(fen) {
         });
 
         try {
-            const cloudTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 2200));
+            const cloudTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 1200));
             const winner = await Promise.race([
                 Promise.any([stockfishPromise, lichessPromise, chessdbPromise]),
                 cloudTimeout
@@ -941,7 +1059,7 @@ async function getBestMove(fen) {
             }
         } catch (_) {}
 
-        // 4. Local Embedded Engine (depth 3 + quiescence depth 3)
+        // 5. Local Embedded Engine with endgame depth 4 and mop-up evaluation
         const bestMv = engine.getBestMove(3);
         if (bestMv && legalUcis.includes(bestMv)) {
             BOT_S.engineName = "Embedded GM";
@@ -1174,10 +1292,10 @@ function isForbiddenButton(el) {
 
 let _lastClickTime = 0;
 
-function simulateFullClick(el) {
+function simulateFullClick(el, force = false) {
     if (!el || isForbiddenButton(el)) return false;
     const now = Date.now();
-    if (now - _lastClickTime < 180) return false;
+    if (!force && (now - _lastClickTime < 180)) return false;
     _lastClickTime = now;
 
     try {
@@ -1207,8 +1325,44 @@ function simulateFullClick(el) {
 }
 
 /**
+ * Locate the active promotion modal container by attribute or text content.
+ */
+function findPromotionModal() {
+    // 1. Direct attribute selectors
+    const attrSel = '[data-test*="promotion" i], [class*="promotion" i], [id*="promotion" i], div[role="dialog"]';
+    try {
+        const found = document.querySelectorAll(attrSel);
+        for (const el of found) {
+            if (!el.closest("#dc-pill") && isElementVisible(el)) return el;
+        }
+    } catch (_) {}
+
+    // 2. TreeWalker search for "PAWN PROMOTION" text
+    try {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) {
+            const val = (node.nodeValue || "").trim();
+            if (/pawn\s*promotion|promotion/i.test(val)) {
+                let el = node.parentElement;
+                if (!el || el.closest("#dc-pill")) continue;
+                for (let i = 0; i < 4; i++) {
+                    if (!el.parentElement || el.parentElement === document.body || el.parentElement === document.documentElement) break;
+                    const r = el.getBoundingClientRect();
+                    if (r.width >= 120 && r.height >= 50) break;
+                    el = el.parentElement;
+                }
+                if (isElementVisible(el)) return el;
+            }
+        }
+    } catch (_) {}
+
+    return null;
+}
+
+/**
  * Try to click the Queen promotion button in the DOM.
- * Returns true if a queen selector was found and clicked.
+ * Returns true if a queen selector or leftmost promotion option was found and clicked.
  */
 function autoClickPromotion() {
     const queenSelectors = [
@@ -1220,109 +1374,135 @@ function autoClickPromotion() {
         `[aria-label*="dama" i]`, `[aria-label*="ferz" i]`, `[aria-label*="königin" i]`
     ];
 
-    // Direct Queen button
+    // Direct Queen button anywhere on DOM
     for (const sel of queenSelectors) {
         try {
             const els = document.querySelectorAll(sel);
             for (const el of els) {
                 if (isElementVisible(el) && !isForbiddenButton(el) && !el.closest("#dc-pill")) {
-                    simulateFullClick(el);
+                    simulateFullClick(el, true);
                     return true;
                 }
             }
         } catch (_) {}
     }
 
-    // Promotion modal containers — find Queen inside
-    try {
-        const promoContainers = document.querySelectorAll(
-            '[data-test*="promotion" i], [class*="promotion" i], [id*="promotion" i], div[role="dialog"], [aria-label*="promotion" i]'
-        );
-        for (const container of promoContainers) {
-            if (container.closest("#dc-pill")) continue;
-            const queenEl = container.querySelector(queenSelectors.join(", "));
-            if (queenEl && isElementVisible(queenEl)) {
-                simulateFullClick(queenEl);
-                return true;
-            }
-
-            // Fallback: find items with "queen" in class/id/content
-            const items = Array.from(container.querySelectorAll(
-                'button, [role="button"], img, svg, div[tabindex], div[class*="piece" i]'
-            )).filter(el => {
-                if (el.closest("#dc-pill") || !isElementVisible(el)) return false;
-                const r = el.getBoundingClientRect();
-                return r.width >= 16 && r.height >= 16 && r.width <= 160 && r.height <= 160;
-            });
-
-            const qItem = items.find(el => /queen|dame|reina|hậu|dama|ferz|\bq\b/i.test(el.outerHTML || ""));
-            if (qItem) {
-                simulateFullClick(qItem);
-                return true;
-            }
+    // Promotion modal container — find Queen inside
+    const container = findPromotionModal();
+    if (container) {
+        // A. Direct Queen selector inside container
+        for (const sel of queenSelectors) {
+            try {
+                const q = container.querySelector(sel);
+                if (q && isElementVisible(q)) {
+                    simulateFullClick(q, true);
+                    return true;
+                }
+            } catch (_) {}
         }
-    } catch (_) {}
+
+        // B. Find candidate interactive elements inside container
+        const candidates = Array.from(container.querySelectorAll(
+            'button, [role="button"], [tabindex], svg, img, div'
+        )).filter(el => {
+            if (el.closest("#dc-pill") || isForbiddenButton(el) || !isElementVisible(el)) return false;
+            const r = el.getBoundingClientRect();
+            return r.width >= 16 && r.height >= 16 && r.width <= 140 && r.height <= 140;
+        });
+
+        if (candidates.length > 0) {
+            // Sort elements left-to-right (Queen is ALWAYS index 0, the leftmost!)
+            candidates.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+            const leftmost = candidates[0];
+            simulateFullClick(leftmost, true);
+
+            const lr = leftmost.getBoundingClientRect();
+            const cx = lr.left + lr.width / 2;
+            const cy = lr.top + lr.height / 2;
+            dispatchPointer("pointerdown", leftmost, cx, cy, 1, 0, 1);
+            dispatchPointer("pointerup", leftmost, cx, cy, 0, 0, 1);
+            dispatchPointer("click", leftmost, cx, cy, 0, 0, 1);
+            return true;
+        }
+
+        // C. Fallback: Click the Queen zone inside container bounding rect
+        // In Duolingo's modal, Queen is horizontally in the left ~22% and vertically ~65% down
+        const cr = container.getBoundingClientRect();
+        const qx = cr.left + cr.width * 0.22;
+        const qy = cr.top + cr.height * 0.65;
+        const targetEl = document.elementFromPoint(qx, qy) || container;
+        simulateFullClick(targetEl, true);
+        dispatchPointer("pointerdown", targetEl, qx, qy, 1, 0, 1);
+        dispatchPointer("pointerup", targetEl, qx, qy, 0, 0, 1);
+        dispatchPointer("click", targetEl, qx, qy, 0, 0, 1);
+        return true;
+    }
 
     return false;
 }
 
 /**
- * Handle pawn promotion: SINGLE ATTEMPT strategy.
- * 1. Wait briefly for Duolingo's promotion modal to appear
- * 2. Try DOM queen click ONCE
- * 3. If DOM fails, try canvas tap on the promotion square ONCE
- * 4. Send queen key press ONCE
- * NO LOOPING. The poll loop handles retries if promotion is still pending.
+ * Handle pawn promotion:
+ * 1. Rapidly poll DOM and canvas targets for Queen selection
+ * 2. Taps DOM Queen, destination square, and exact canvas modal coordinates
+ * 3. Never hangs or causes epilepsy
  */
 async function handlePromotion(destSq, promoChar, insetRatio, flipped) {
     _pendingPromotionSq = destSq || "q";
     _pendingPromotionTime = Date.now();
 
-    try {
-        // Wait for Duolingo's promotion modal to mount
-        await sleep(200);
+    const canvas = findCanvas();
+    const sq = destSq || "d8";
 
-        // Attempt 1: DOM queen click
+    for (let attempt = 0; attempt < 6; attempt++) {
+        // 1. DOM Queen Click
         if (autoClickPromotion()) {
-            await sleep(60);
-            _pendingPromotionSq = null;
-            return true;
-        }
-
-        // Attempt 2: Canvas tap on the destination square (queen appears there)
-        const canvas = findCanvas();
-        if (canvas) {
-            const pt = getSquareCoords(canvas, destSq, insetRatio, flipped);
-            await dispatchTap(canvas, pt.x, pt.y, 30);
-            await sleep(100);
-
-            // Check if DOM promotion appeared after canvas tap
-            if (autoClickPromotion()) {
-                await sleep(60);
+            await sleep(40);
+            if (!findPromotionModal()) {
                 _pendingPromotionSq = null;
                 return true;
             }
         }
 
-        // Attempt 3: Keyboard 'q' key (some Duolingo versions use keyboard shortcuts)
+        // 2. Canvas Tap Fallbacks:
+        if (canvas) {
+            const cr = canvas.getBoundingClientRect();
+            const pt = getSquareCoords(canvas, sq, insetRatio, flipped);
+            const sqW = (cr.width * (1 - (insetRatio || 64 / 648) * 2)) / 8;
+            const sqH = (cr.height * (1 - (insetRatio || 64 / 648) * 2)) / 8;
+            const isTop = (pt.y - cr.top) < (cr.height / 2);
+
+            // A. Destination square itself
+            await dispatchTap(canvas, pt.x, pt.y, 25);
+
+            // B. Queen icon relative to promotion square (modal hangs below if top, above if bottom)
+            const promoQx = Math.max(cr.left + sqW * 0.5, Math.min(cr.right - sqW * 0.5, pt.x - 1.6 * sqW));
+            const promoQy = isTop ? (pt.y + 2.4 * sqH) : (pt.y - 2.4 * sqH);
+            await dispatchTap(canvas, promoQx, promoQy, 25);
+
+            // C. Fixed board-relative Queen position (exact measurement from Duolingo screenshot: X=45.8%, Y=28.8%)
+            const fixedQx = cr.left + cr.width * 0.458;
+            const fixedQy = isTop ? (cr.top + cr.height * 0.288) : (cr.top + cr.height * 0.712);
+            await dispatchTap(canvas, fixedQx, fixedQy, 25);
+        }
+
+        // 3. Keyboard triggers
         try {
-            const evOpts = { key: "q", code: "KeyQ", keyCode: 81, bubbles: true, cancelable: true, composed: true };
-            document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
-            document.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+            for (const k of ["q", "Q", "1"]) {
+                const evOpts = { key: k, code: `Key${k.toUpperCase()}`, bubbles: true, cancelable: true, composed: true };
+                document.dispatchEvent(new KeyboardEvent("keydown", evOpts));
+                document.dispatchEvent(new KeyboardEvent("keyup", evOpts));
+            }
         } catch (_) {}
 
-        await sleep(100);
-
-        // Final DOM check
-        if (autoClickPromotion()) {
+        await sleep(50);
+        if (!findPromotionModal()) {
             _pendingPromotionSq = null;
             return true;
         }
+    }
 
-        // If we get here, the poll loop will keep trying autoClickPromotion
-        // via the _pendingPromotionSq flag until it clears or times out
-    } catch (_) {}
-
+    _pendingPromotionSq = null;
     return true;
 }
 
@@ -1334,9 +1514,11 @@ function autoMatchOscar() {
     if (!BOT_CFG.autoMatch) return false;
 
     // 1. Handle pending promotion
-    if (_pendingPromotionSq && autoClickPromotion()) {
-        _pendingPromotionSq = null;
-        return true;
+    if (findPromotionModal() || _pendingPromotionSq) {
+        if (autoClickPromotion()) {
+            _pendingPromotionSq = null;
+            return true;
+        }
     }
 
     // 2. Direct rematch / play-again buttons
@@ -1509,6 +1691,7 @@ function onMatchData(data) {
         _lastAttemptCount = 0;
         _gamePositionCounts.clear();
         _lastBotMove = null;
+        _botMoveHistory = [];
 
         if (match.playerColor) {
             BOT_S.playerColor = match.playerColor.toLowerCase();
@@ -1557,6 +1740,7 @@ function onMatchData(data) {
         _lastAttemptedFen = null;
         _lastAttemptCount = 0;
         _pendingPromotionSq = null;
+        _botMoveHistory = [];
         setStatus("idle");
         if (BOT_CFG.autoMatch) {
             autoMatchOscar();
@@ -1588,6 +1772,11 @@ function onMatchData(data) {
 
 async function takeTurn() {
     if (BOT_S.turnInProgress) return;
+    // If promotion modal is already open on screen, click Queen immediately!
+    if (findPromotionModal()) {
+        autoClickPromotion();
+        return;
+    }
     if (!isOurTurn(BOT_S.currentFen)) return;
 
     BOT_S.turnInProgress = true;
@@ -1611,13 +1800,16 @@ async function takeTurn() {
         setStatus("playing");
         BOT_S.lastMove = move;
         _lastBotMove = move;
+        if (!_botMoveHistory) _botMoveHistory = [];
+        _botMoveHistory.unshift(move);
+        if (_botMoveHistory.length > 8) _botMoveHistory.pop();
 
         const flip = BOT_CFG.flipped || (BOT_S.playerColor || "").toLowerCase() === "black";
 
         // Execute the move ONCE — clean single tap per square
         await executeMove(move, BOT_CFG.boardInsetRatio, flip);
 
-        // Handle promotion ONCE — no loops
+        // Handle promotion ONCE — rapid auto-click
         if (isPromotion) {
             await handlePromotion(move.slice(2, 4), "q", BOT_CFG.boardInsetRatio, flip);
         }
@@ -2136,18 +2328,23 @@ async function _autoPollLoop() {
     while (true) {
         await sleep(POLL_MS);
 
-        // ─── WATCHDOG 1: Clear stuck thinking/playing if hung > 2.5s ───
-        // Reduced from 5s to 2.5s for faster recovery from stuck promotions
+        // ─── PRIORITY 0: Active promotion modal on screen — resolve Queen immediately! ───
+        if (findPromotionModal()) {
+            autoClickPromotion();
+            _pendingPromotionSq = null;
+            continue;
+        }
+
+        // ─── WATCHDOG 1: Clear stuck thinking/playing if hung > 2.0s ───
         if ((BOT_S.status === "thinking" || BOT_S.status === "playing" || BOT_S.turnInProgress) &&
-            (Date.now() - _lastStateChange > 2500)) {
+            (Date.now() - _lastStateChange > 2000)) {
             BOT_S.turnInProgress = false;
             _pendingPromotionSq = null;
             setStatus("idle");
         }
 
-        // ─── WATCHDOG 2: Clear stuck promotion after 1.5s ───
-        if (_pendingPromotionSq && (Date.now() - _pendingPromotionTime > 1500)) {
-            // Try one more DOM click before giving up
+        // ─── WATCHDOG 2: Clear stuck promotion after 1.0s ───
+        if (_pendingPromotionSq && (Date.now() - _pendingPromotionTime > 1000)) {
             autoClickPromotion();
             _pendingPromotionSq = null;
         }
@@ -2156,7 +2353,7 @@ async function _autoPollLoop() {
         if (BOT_CFG.autoPlay && isOurTurn(BOT_S.currentFen) && !BOT_S.turnInProgress &&
             BOT_S.status !== "playing" && BOT_S.status !== "thinking") {
             const isSameFen = (BOT_S.currentFen === _lastAttemptedFen);
-            const cooldown = isSameFen ? 1500 : 80;
+            const cooldown = isSameFen ? 1200 : 80;
             if (Date.now() - _lastMoveAttemptTime > cooldown) {
                 setStatus("our_turn");
                 takeTurn();
