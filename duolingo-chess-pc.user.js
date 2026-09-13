@@ -14,8 +14,6 @@
 // @grant        GM.getValue
 // @connect      tablebase.lichess.ovh
 // @connect      *.tablebase.lichess.ovh
-// @connect      cdnjs.cloudflare.com
-// @connect      *.cdnjs.cloudflare.com
 // @connect      stockfish.online
 // @connect      *.stockfish.online
 // @connect      chess-api.com
@@ -914,7 +912,7 @@
             const gmReq = (typeof GM_xmlhttpRequest === "function" ? GM_xmlhttpRequest : (typeof GM !== "undefined" && GM.xmlHttpRequest ? GM.xmlHttpRequest : null));
             const method = opts.method || "GET";
             const data = opts.data || null;
-            const headers = { "Accept": "application/json", ...(opts.data ? { "Content-Type": "application/json" } : {}), ...(opts.headers || {}) };
+            const headers = { "Accept": "application/json, text/plain, */*", ...(opts.data ? { "Content-Type": "application/json" } : {}), ...(opts.headers || {}) };
 
             if (gmReq) {
                 try {
@@ -922,8 +920,11 @@
                         method, url, data, timeout: timeoutMs, headers,
                         onload: (res) => {
                             if (res.status >= 200 && res.status < 300) {
-                                try { resolve(JSON.parse(res.responseText)); }
-                                catch (e) { reject(e); }
+                                try {
+                                    resolve(JSON.parse(res.responseText));
+                                } catch (_) {
+                                    resolve({ text: res.responseText });
+                                }
                             } else {
                                 reject(new Error(`HTTP ${res.status}`));
                             }
@@ -936,14 +937,21 @@
             }
 
             // Fallback to fetch
-            const controller = new AbortController();
-            const tid = setTimeout(() => controller.abort(), timeoutMs);
-            const fetchOpts = { method, headers, signal: controller.signal };
+            const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+            const tid = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+            const fetchOpts = { method, headers, signal: controller?.signal };
             if (data) fetchOpts.body = data;
 
             fetch(url, fetchOpts)
-                .then(r => { clearTimeout(tid); if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-                .then(resolve)
+                .then(r => {
+                    clearTimeout(tid);
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    return r.text();
+                })
+                .then(text => {
+                    try { resolve(JSON.parse(text)); }
+                    catch (_) { resolve({ text }); }
+                })
                 .catch(reject);
         });
     }
@@ -983,151 +991,30 @@
     function cleanFenForApi(fen) {
         if (!fen || typeof fen !== "string") return "";
         const parts = fen.trim().split(/\s+/);
-        if (parts.length < 4) return fen;
-        return `${parts[0]} ${parts[1]} ${parts[2] || "-"} ${parts[3] || "-"} ${parts[4] || "0"} ${parts[5] || "1"}`;
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════════
-    //  ENGINE 1: LOCAL STOCKFISH WEB-WORKER (3700+ ELO, ZERO RATE LIMITS, ZERO DROPS)
-    // ══════════════════════════════════════════════════════════════════════════════
-
-    let _sfWorker = null;
-    let _sfWorkerReady = false;
-    let _sfWorkerInitPromise = null;
-    let _sfPendingResolve = null;
-    let _sfPendingMultiPv = [];
-
-    async function getStockfishCode() {
-        let cached = null;
-        try {
-            if (typeof GM_getValue !== "undefined") cached = GM_getValue("duochess_sf_js");
-            else if (typeof GM !== "undefined" && GM.getValue) cached = await GM.getValue("duochess_sf_js");
-        } catch (_) { }
-
-        if (cached && typeof cached === "string" && cached.length > 50000) return cached;
-
-        const code = await new Promise((resolve, reject) => {
-            if (typeof GM_xmlhttpRequest !== "undefined") {
-                GM_xmlhttpRequest({
-                    method: "GET",
-                    url: "https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js",
-                    onload: r => resolve(r.responseText),
-                    onerror: reject
-                });
-            } else if (typeof GM !== "undefined" && GM.xmlHttpRequest) {
-                GM.xmlHttpRequest({
-                    method: "GET",
-                    url: "https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js",
-                    onload: r => resolve(r.responseText),
-                    onerror: reject
-                });
-            } else {
-                fetch("https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js")
-                    .then(r => r.text())
-                    .then(resolve)
-                    .catch(reject);
+        if (parts.length < 2) return fen;
+        const board = parts[0];
+        const turn = parts[1] === "b" ? "b" : "w";
+        const castling = parts[2] || "-";
+        let ep = parts[3] || "-";
+        if (ep !== "-") {
+            const file = ep[0];
+            const rank = ep[1];
+            if (!/^[a-h]$/.test(file) || (turn === "w" && rank !== "6") || (turn === "b" && rank !== "3")) {
+                ep = "-";
             }
-        });
-
-        if (code && code.length > 50000) {
-            try {
-                if (typeof GM_setValue !== "undefined") GM_setValue("duochess_sf_js", code);
-                else if (typeof GM !== "undefined" && GM.setValue) await GM.setValue("duochess_sf_js", code);
-            } catch (_) { }
         }
-        return code;
+        return `${board} ${turn} ${castling} ${ep} ${parts[4] || "0"} ${parts[5] || "1"}`;
     }
 
-    function initStockfishWorker() {
-        if (_sfWorkerInitPromise) return _sfWorkerInitPromise;
-        _sfWorkerInitPromise = (async () => {
-            try {
-                const sfCode = await getStockfishCode();
-                if (!sfCode || sfCode.length < 50000) throw new Error("Invalid Stockfish JS source");
-
-                const blob = new Blob([sfCode], { type: "application/javascript" });
-                _sfWorker = new Worker(URL.createObjectURL(blob));
-
-                _sfWorker.onmessage = (e) => {
-                    const line = typeof e === "string" ? e : (e.data || "");
-                    if (typeof line !== "string") return;
-
-                    if (line.includes("uciok") || line === "readyok") {
-                        _sfWorkerReady = true;
-                    }
-
-                    // Collect multi-pv moves: info depth X multipv 1 score ... pv e2e4 ...
-                    if (line.startsWith("info depth") && line.includes(" pv ")) {
-                        const pvMatch = line.match(/\bpv\s+([a-h][1-8][a-h][1-8][qrbn]?)/);
-                        if (pvMatch?.[1]) {
-                            const mv = pvMatch[1];
-                            if (!_sfPendingMultiPv.includes(mv)) {
-                                _sfPendingMultiPv.unshift(mv);
-                            }
-                        }
-                    }
-
-                    if (line.startsWith("bestmove") && _sfPendingResolve) {
-                        const parts = line.split(/\s+/);
-                        const mainMv = parts[1];
-                        const cb = _sfPendingResolve;
-                        const pvList = [..._sfPendingMultiPv];
-                        _sfPendingResolve = null;
-                        _sfPendingMultiPv = [];
-                        cb({ mainMove: mainMv, pvMoves: pvList });
-                    }
-                };
-
-                _sfWorker.postMessage("uci");
-                _sfWorker.postMessage("setoption name MultiPV value 3");
-                _sfWorker.postMessage("isready");
-                _sfWorkerReady = true;
-            } catch (err) {
-                console.warn("[DuoBot] Stockfish WASM worker initialization skipped:", err.message);
-                _sfWorker = null;
-            }
-        })();
-        return _sfWorkerInitPromise;
-    }
-
-    async function queryStockfishWasm(engine, fen, timeoutMs = 2500) {
-        if (!_sfWorker) await initStockfishWorker();
-        if (!_sfWorker) return null;
-
-        return new Promise((resolve) => {
-            const tid = setTimeout(() => {
-                _sfPendingResolve = null;
-                _sfPendingMultiPv = [];
-                resolve(null);
-            }, timeoutMs);
-
-            _sfPendingResolve = ({ mainMove, pvMoves }) => {
-                clearTimeout(tid);
-                // Try main move first if draw-safe
-                if (validUCI(mainMove) && isMoveDrawSafe(engine, mainMove)) {
-                    return resolve({ move: mainMove, source: "Stockfish WASM" });
-                }
-                // Try alternate MultiPV moves (all evaluated by 3700+ Stockfish!)
-                for (const pv of pvMoves) {
-                    if (validUCI(pv) && isMoveDrawSafe(engine, pv)) {
-                        return resolve({ move: pv, source: "Stockfish WASM" });
-                    }
-                }
-                if (validUCI(mainMove) && mainMove !== "(none)") {
-                    return resolve({ move: mainMove, source: "Stockfish WASM" });
-                }
-                resolve(null);
-            };
-
-            _sfPendingMultiPv = [];
-            _sfWorker.postMessage("stop");
-            _sfWorker.postMessage(`position fen ${fen}`);
-            _sfWorker.postMessage("go depth 12 movetime 400");
-        });
+    function cleanFenStrict(fen) {
+        if (!fen || typeof fen !== "string") return "";
+        const parts = fen.trim().split(/\s+/);
+        if (parts.length < 2) return fen;
+        return `${parts[0]} ${parts[1]} ${parts[2] || "-"} - ${parts[4] || "0"} ${parts[5] || "1"}`;
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
-    //  ENGINE 2: LICHESS SYZYGY 7-PIECE TABLEBASE (3700+ ELO / MATHEMATICAL PERFECTION)
+    //  ENGINE 1: LICHESS SYZYGY 7-PIECE TABLEBASE (3700+ ELO / MATHEMATICAL PERFECTION)
     // ══════════════════════════════════════════════════════════════════════════════
 
     async function getSyzygyTablebaseMove(engine, fen) {
@@ -1139,7 +1026,7 @@
             }
             if (pieceCount > 7) return null;
 
-            const cleaned = cleanFenForApi(fen);
+            const cleaned = cleanFenStrict(fen);
             const data = await gmHttpFetch(`https://tablebase.lichess.ovh/standard?fen=${encodeURIComponent(cleaned)}`, 1600);
             if (!data?.moves || data.moves.length === 0) return null;
 
@@ -1162,51 +1049,59 @@
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
-    //  ENGINE 3: CLOUD STOCKFISH CLUSTER (3500+ ELO)
+    //  ENGINE 2: PURE STOCKFISH ONLINE SERVERS (3500+ ELO, ZERO WORKERS, ZERO MINIMAX)
     // ══════════════════════════════════════════════════════════════════════════════
 
     async function getFastStockfishMove(fen) {
         try {
-            const depth = Math.min(BOT_CFG.stockfishDepth || 14, 15);
-            const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(fen)}&depth=${depth}&mode=bestmove`, 2500);
+            const cleanedFen = cleanFenForApi(fen);
+            const depth = Math.min(BOT_CFG.stockfishDepth || 15, 15);
+            const data = await gmHttpFetch(`https://stockfish.online/api/s/v2.php?fen=${encodeURIComponent(cleanedFen)}&depth=${depth}&mode=bestmove`, 2600);
             if (!data?.success || !data?.bestmove) return null;
             const mv = data.bestmove.replace(/^bestmove\s*/, "").split(/\s+/)[0];
             if (!validUCI(mv)) return null;
+            const mateStr = data.mate ? ` (M${Math.abs(data.mate)})` : "";
             return {
                 move: mv,
                 mate: data.mate || null,
                 eval: data.evaluation,
-                source: "Stockfish 16+"
+                name: `Stockfish 16+${mateStr}`
             };
-        } catch (_) { }
-        return null;
-    }
-
-    async function getChessDBMove(fen) {
-        try {
-            const data = await gmHttpFetch(`https://www.chessdb.cn/cdb.php?action=querybest&board=${encodeURIComponent(fen)}&json=1`, 2000);
-            if (data?.status === "ok" && data?.move) {
-                const mv = data.move.trim();
-                return validUCI(mv) ? mv : null;
-            }
         } catch (_) { }
         return null;
     }
 
     async function getChessApiMove(fen) {
         try {
-            const cleanedFen = cleanFenForApi(fen);
-            const data = await gmHttpFetch("https://chess-api.com/v1", 2000, {
+            const cleanedFen = cleanFenStrict(fen);
+            const data = await gmHttpFetch("https://chess-api.com/v1", 2400, {
                 method: "POST",
                 data: JSON.stringify({ fen: cleanedFen, depth: 14 })
             });
             if (data?.move && validUCI(data.move)) {
+                const mateStr = data.mate ? ` (M${Math.abs(data.mate)})` : "";
                 return {
                     move: data.move,
                     mate: data.mate ?? null,
                     eval: data.eval,
-                    source: "Stockfish 16+"
+                    name: `Stockfish 16+${mateStr}`
                 };
+            }
+        } catch (_) { }
+        return null;
+    }
+
+    async function getChessDBMove(fen) {
+        try {
+            const cleanedFen = cleanFenStrict(fen);
+            const data = await gmHttpFetch(`https://www.chessdb.cn/cdb.php?action=querybest&board=${encodeURIComponent(cleanedFen)}&json=1`, 2000);
+            if (data?.status === "ok" && data?.move) {
+                const mv = data.move.trim();
+                return validUCI(mv) ? { move: mv, name: "ChessDB" } : null;
+            }
+            if (typeof data?.text === "string" && data.text.startsWith("move:")) {
+                const mv = data.text.replace(/^move:/, "").trim().split(/\s+/)[0];
+                return validUCI(mv) ? { move: mv, name: "ChessDB" } : null;
             }
         } catch (_) { }
         return null;
@@ -1215,30 +1110,27 @@
     async function getCloudStockfishMove(engine, fen) {
         const promises = [];
 
+        // 1. Primary: stockfish.online (High-depth Stockfish 16+ server)
         promises.push(
             getFastStockfishMove(fen).then(res => {
-                if (res?.move && isMoveDrawSafe(engine, res.move)) {
-                    const mateStr = res.mate ? ` (M${Math.abs(res.mate)})` : "";
-                    return { move: res.move, name: `Stockfish 16+${mateStr}` };
-                }
-                throw new Error();
+                if (res?.move && isMoveDrawSafe(engine, res.move)) return res;
+                throw new Error("SF online not safe");
             })
         );
 
-        promises.push(
-            getChessDBMove(fen).then(mv => {
-                if (mv && isMoveDrawSafe(engine, mv)) return { move: mv, name: "ChessDB" };
-                throw new Error();
-            })
-        );
-
+        // 2. High-speed backup: chess-api.com (Pure Stockfish 16 server)
         promises.push(
             getChessApiMove(fen).then(res => {
-                if (res?.move && isMoveDrawSafe(engine, res.move)) {
-                    const mateStr = res.mate ? ` (M${Math.abs(res.mate)})` : "";
-                    return { move: res.move, name: `Stockfish 16+${mateStr}` };
-                }
-                throw new Error();
+                if (res?.move && isMoveDrawSafe(engine, res.move)) return res;
+                throw new Error("Chess-API not safe");
+            })
+        );
+
+        // 3. Cloud evaluation database: chessdb.cn
+        promises.push(
+            getChessDBMove(fen).then(res => {
+                if (res?.move && isMoveDrawSafe(engine, res.move)) return res;
+                throw new Error("ChessDB not safe");
             })
         );
 
@@ -1302,12 +1194,12 @@
     }
 
     /**
-     * Superhuman Move Finder (3700+ Elo, Zero Blunders):
+     * Superhuman Move Finder (3500+ Elo, Zero Blunders):
      * 1. Instant opening book (0ms)
      * 2. Instant checkmate scan (0ms)
      * 3. Forced mate-in-2 scanner (<5ms)
-     * 4. ENGINE 2: Lichess Syzygy 7-Piece Endgame Tablebase (3700+ Elo / Mathematically Perfect, <= 7 pieces)
-     * 5. ENGINE 1 & 3: Local Stockfish WebAssembly Worker (3700+ Elo) in parallel with Cloud Stockfish Cluster
+     * 4. ENGINE 1: Lichess Syzygy 7-Piece Endgame Tablebase (3700+ Elo / Mathematically Perfect, <= 7 pieces)
+     * 5. ENGINE 2: Pure Stockfish Online Servers (3500+ Elo: stockfish.online + chess-api.com + chessdb.cn)
      * 6. ZERO local minimax blunders — every move is grandmaster-grade!
      */
     async function getBestMove(fen) {
@@ -1350,41 +1242,19 @@
                 return tablebaseRes.move;
             }
 
-            // 5. ENGINE 1 & 3 PARALLEL RACE:
-            // Local Stockfish WebAssembly Worker (3700+ Elo, 0 network lag, 0 rate limits)
-            // raced against Cloud Stockfish Cluster!
-            try {
-                const topWinner = await Promise.any([
-                    queryStockfishWasm(engine, fen, 2500).then(res => {
-                        if (res?.move && legalUcis.includes(res.move)) return res;
-                        throw new Error();
-                    }),
-                    getCloudStockfishMove(engine, fen).then(res => {
-                        if (res?.move && legalUcis.includes(res.move)) return res;
-                        throw new Error();
-                    })
-                ]);
-                if (topWinner?.move) {
-                    BOT_S.engineName = topWinner.name || topWinner.source || "Stockfish 16+";
-                    return topWinner.move;
-                }
-            } catch (_) { }
+            // 5. PURE STOCKFISH ONLINE SERVERS (3500+ Elo, Zero Workers, Zero Minimax)
+            const onlineMove = await getCloudStockfishMove(engine, fen);
+            if (onlineMove?.move && legalUcis.includes(onlineMove.move)) {
+                BOT_S.engineName = onlineMove.name || "Stockfish 16+";
+                return onlineMove.move;
+            }
 
-            // 6. Direct Local Stockfish WebAssembly fallback if cloud was busy or failed
+            // 6. Direct retry of Stockfish Online if cloud cluster needed another moment
             try {
-                const wasmDirect = await queryStockfishWasm(engine, fen, 3500);
-                if (wasmDirect?.move && legalUcis.includes(wasmDirect.move)) {
-                    BOT_S.engineName = "Stockfish WASM";
-                    return wasmDirect.move;
-                }
-            } catch (_) { }
-
-            // 7. Direct Cloud Stockfish fallback
-            try {
-                const cloudDirect = await getCloudStockfishMove(engine, fen);
-                if (cloudDirect?.move && legalUcis.includes(cloudDirect.move)) {
-                    BOT_S.engineName = cloudDirect.name || "Stockfish 16+";
-                    return cloudDirect.move;
+                const retryMove = await getFastStockfishMove(fen);
+                if (retryMove?.move && legalUcis.includes(retryMove.move) && isMoveDrawSafe(engine, retryMove.move)) {
+                    BOT_S.engineName = retryMove.name || "Stockfish 16+";
+                    return retryMove.move;
                 }
             } catch (_) { }
 
@@ -2743,7 +2613,6 @@
     // ══════════════════════════════════════════════════════════════════════════════
 
     function _boot() {
-        initStockfishWorker();
         _autoPollLoop();
         if (document.body) {
             createPanel();
