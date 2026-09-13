@@ -2209,52 +2209,148 @@
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
-    //  DRAGGABLE HUD PANEL
+    //  STREAMLINED CENTERED DOCK UI
     // ══════════════════════════════════════════════════════════════════════════════
 
     let _panel = null;
 
     const STYLE = `
-#dc-pill{
-    position:fixed;bottom:20px;right:20px;
-    background:rgba(15,23,42,0.96);border:1px solid rgba(148,163,184,0.3);
-    border-radius:12px;padding:12px 16px;
-    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    color:#f8fafc;z-index:2147483647;user-select:none;
-    box-shadow:0 8px 32px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.06);
-    display:flex;flex-direction:column;gap:8px;
-    min-width:280px;max-width:320px;cursor:grab;touch-action:none;
-    font-size:13px;box-sizing:border-box;
+#dc-dock {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2147483647;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    user-select: none;
+    pointer-events: auto;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
-#dc-pill.dragging{cursor:grabbing;opacity:0.92;}
-.dc-row{display:flex;align-items:center;justify-content:space-between;gap:10px;}
-.dc-title{font-weight:900;color:#58cc02;font-size:14px;letter-spacing:0.8px;}
-.dc-status{
-    font-size:11px;font-weight:800;padding:3px 8px;border-radius:5px;
-    background:#334155;color:#94a3b8;text-transform:uppercase;letter-spacing:0.4px;
+
+.dc-circle-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.15s ease, background 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08);
+    padding: 0;
+    outline: none;
+    flex-shrink: 0;
 }
-.dc-status.active{background:#16a34a;color:#fff;}
-.dc-status.thinking{background:#d97706;color:#fff;}
-.dc-status.matching{background:#2563eb;color:#fff;}
-.dc-info{
-    font-size:12px;color:#94a3b8;border-top:1px solid rgba(51,65,85,0.7);padding-top:7px;
-    display:flex;align-items:center;justify-content:space-between;gap:8px;
+
+.dc-circle-btn:hover {
+    transform: scale(1.08);
 }
-.dc-engine{color:#38bdf8;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px;}
-.dc-move{color:#facc15;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;font-weight:800;font-size:13px;}
-.dc-btn-grid{
-    display:grid;grid-template-columns:1fr 1fr;gap:8px;
-    border-top:1px solid rgba(51,65,85,0.7);padding-top:7px;
+
+.dc-circle-btn:active {
+    transform: scale(0.94);
 }
-.dc-btn{
-    background:#58cc02;color:#052e16;border:none;border-radius:7px;
-    padding:8px 10px;font-size:11.5px;font-weight:800;cursor:pointer;
-    line-height:1.25;text-align:center;transition:background 0.15s ease, filter 0.15s ease;
-    white-space:nowrap;user-select:none;
+
+/* Play button active (green) vs off (dark) */
+#dc-tg-play.active {
+    background: #58cc02;
+    color: #ffffff;
+    box-shadow: 0 4px 18px rgba(88, 204, 2, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.15);
 }
-.dc-btn.off{background:#334155;color:#94a3b8;}
-.dc-btn:hover{filter:brightness(1.1);}
-.dc-btn:active{filter:brightness(0.92);}
+#dc-tg-play.off {
+    background: #1e293b;
+    color: #64748b;
+}
+
+/* Match button active (blue) vs off (dark) */
+#dc-tg-match.active {
+    background: #2563eb;
+    color: #ffffff;
+    box-shadow: 0 4px 18px rgba(37, 99, 235, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.15);
+}
+#dc-tg-match.off {
+    background: #1e293b;
+    color: #64748b;
+}
+
+/* Pure CSS Icons: No SVGs, No text glyphs */
+.dc-ico {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+}
+
+.dc-ico-play {
+    width: 0;
+    height: 0;
+    border-top: 6px solid transparent;
+    border-bottom: 6px solid transparent;
+    border-left: 11px solid currentColor;
+    margin-left: 2px;
+}
+
+.dc-ico-pause {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+    justify-content: center;
+}
+.dc-ico-pause::before,
+.dc-ico-pause::after {
+    content: "";
+    width: 3.5px;
+    height: 13px;
+    background: currentColor;
+    border-radius: 1px;
+}
+
+.dc-ico-next {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.5px;
+    margin-left: 1px;
+}
+.dc-ico-next::before,
+.dc-ico-next::after {
+    content: "";
+    width: 0;
+    height: 0;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+    border-left: 7px solid currentColor;
+}
+
+/* Center box showing engine name */
+#dc-engine-box {
+    height: 44px;
+    padding: 0 20px;
+    border-radius: 22px;
+    background: rgba(15, 23, 42, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(12px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 140px;
+    max-width: 260px;
+    box-sizing: border-box;
+}
+
+#dc-engine-name {
+    color: #38bdf8;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: center;
+}
 `;
 
     function injectCSS() {
@@ -2270,28 +2366,24 @@
         if (_panel) { _panel.remove(); _panel = null; }
 
         _panel = document.createElement("div");
-        _panel.id = "dc-pill";
+        _panel.id = "dc-dock";
 
         _panel.innerHTML = `
-    <div class="dc-row">
-        <span class="dc-title">DUOCHESS v6</span>
-        <span class="dc-status" id="dc-st">${esc(BOT_S.status)}</span>
-    </div>
-    <div class="dc-info">
-        <span class="dc-engine" id="dc-eng">${esc(BOT_S.engineName || "Stockfish 16+")}</span>
-        <span class="dc-move" id="dc-mv">${esc(BOT_S.lastMove || "-")}</span>
-    </div>
-    <div class="dc-btn-grid">
-        <button id="dc-tg-play" class="dc-btn ${BOT_CFG.autoPlay ? '' : 'off'}">${BOT_CFG.autoPlay ? 'AUTO PLAY: ON' : 'AUTO PLAY: OFF'}</button>
-        <button id="dc-tg-match" class="dc-btn ${BOT_CFG.autoMatch ? '' : 'off'}">${BOT_CFG.autoMatch ? 'AUTO MATCH: ON' : 'AUTO MATCH: OFF'}</button>
-    </div>`;
+            <button id="dc-tg-play" class="dc-circle-btn ${BOT_CFG.autoPlay ? 'active' : 'off'}" title="${BOT_CFG.autoPlay ? 'Auto Play: ON' : 'Auto Play: OFF'}">
+                <span class="dc-ico ${BOT_CFG.autoPlay ? 'dc-ico-play' : 'dc-ico-pause'}"></span>
+            </button>
+            <div id="dc-engine-box">
+                <span id="dc-engine-name">${esc(BOT_S.engineName || "Stockfish 16+")}</span>
+            </div>
+            <button id="dc-tg-match" class="dc-circle-btn ${BOT_CFG.autoMatch ? 'active' : 'off'}" title="${BOT_CFG.autoMatch ? 'Auto Match: ON' : 'Auto Match: OFF'}">
+                <span class="dc-ico dc-ico-next"></span>
+            </button>
+        `;
 
         document.body.appendChild(_panel);
 
         const tgPlay = _panel.querySelector("#dc-tg-play");
         if (tgPlay) {
-            tgPlay.addEventListener("pointerdown", e => e.stopPropagation());
-            tgPlay.addEventListener("touchstart", e => e.stopPropagation());
             tgPlay.addEventListener("click", e => {
                 e.stopPropagation();
                 BOT_CFG.autoPlay = !BOT_CFG.autoPlay;
@@ -2302,8 +2394,6 @@
 
         const tgMatch = _panel.querySelector("#dc-tg-match");
         if (tgMatch) {
-            tgMatch.addEventListener("pointerdown", e => e.stopPropagation());
-            tgMatch.addEventListener("touchstart", e => e.stopPropagation());
             tgMatch.addEventListener("click", e => {
                 e.stopPropagation();
                 BOT_CFG.autoMatch = !BOT_CFG.autoMatch;
@@ -2312,119 +2402,29 @@
             });
         }
 
-        makeDraggable(_panel);
         renderPanel();
-    }
-
-    function makeDraggable(el) {
-        let isDragging = false;
-        let startX = 0, startY = 0;
-        let initialLeft = 0, initialTop = 0;
-
-        function keepInBounds() {
-            if (!el || !el.isConnected) return;
-            const rect = el.getBoundingClientRect();
-            const maxL = Math.max(10, window.innerWidth - rect.width - 12);
-            const maxT = Math.max(10, window.innerHeight - rect.height - 12);
-            if (rect.right > window.innerWidth || rect.left < 0 || rect.bottom > window.innerHeight || rect.top < 0) {
-                el.style.left = Math.min(maxL, Math.max(10, rect.left)) + "px";
-                el.style.top = Math.min(maxT, Math.max(10, rect.top)) + "px";
-                el.style.bottom = "auto";
-                el.style.right = "auto";
-            }
-        }
-
-        window.addEventListener("resize", keepInBounds);
-
-        try {
-            const saved = JSON.parse(localStorage.getItem(STORE_KEY + "_pos") || "null");
-            if (saved && typeof saved.left === "number" && typeof saved.top === "number") {
-                const maxL = Math.max(10, window.innerWidth - 240);
-                const maxT = Math.max(10, window.innerHeight - 90);
-                el.style.left = Math.min(maxL, Math.max(10, saved.left)) + "px";
-                el.style.top = Math.min(maxT, Math.max(10, saved.top)) + "px";
-                el.style.bottom = "auto";
-                el.style.right = "auto";
-            }
-        } catch (_) { }
-
-        function initPos() {
-            const rect = el.getBoundingClientRect();
-            el.style.left = rect.left + "px";
-            el.style.top = rect.top + "px";
-            el.style.bottom = "auto";
-            el.style.right = "auto";
-        }
-
-        function onStart(e) {
-            if (e.target.tagName === "BUTTON" || e.target.closest("button")) return;
-            initPos();
-            isDragging = true;
-            const pt = e.touches ? e.touches[0] : e;
-            startX = pt.clientX;
-            startY = pt.clientY;
-            const rect = el.getBoundingClientRect();
-            initialLeft = rect.left;
-            initialTop = rect.top;
-            el.classList.add("dragging");
-        }
-
-        function onMove(e) {
-            if (!isDragging) return;
-            const pt = e.touches ? e.touches[0] : e;
-            const dx = pt.clientX - startX;
-            const dy = pt.clientY - startY;
-            const maxLeft = Math.max(10, window.innerWidth - el.offsetWidth - 10);
-            const maxTop = Math.max(10, window.innerHeight - el.offsetHeight - 10);
-            el.style.left = Math.min(maxLeft, Math.max(10, initialLeft + dx)) + "px";
-            el.style.top = Math.min(maxTop, Math.max(10, initialTop + dy)) + "px";
-            if (e.cancelable) e.preventDefault();
-        }
-
-        function onEnd() {
-            if (!isDragging) return;
-            isDragging = false;
-            el.classList.remove("dragging");
-            try {
-                const rect = el.getBoundingClientRect();
-                localStorage.setItem(STORE_KEY + "_pos", JSON.stringify({ left: rect.left, top: rect.top }));
-            } catch (_) { }
-        }
-
-        el.addEventListener("pointerdown", onStart);
-        window.addEventListener("pointermove", onMove);
-        window.addEventListener("pointerup", onEnd);
-        window.addEventListener("pointercancel", onEnd);
-
-        el.addEventListener("touchstart", onStart, { passive: true });
-        window.addEventListener("touchmove", onMove, { passive: false });
-        window.addEventListener("touchend", onEnd, { passive: true });
-        window.addEventListener("touchcancel", onEnd, { passive: true });
     }
 
     function renderPanel() {
         if (!_panel) return;
-        const st = _panel.querySelector("#dc-st");
-        const eng = _panel.querySelector("#dc-eng");
-        const mv = _panel.querySelector("#dc-mv");
+        const eng = _panel.querySelector("#dc-engine-name");
         const tgPlay = _panel.querySelector("#dc-tg-play");
         const tgMatch = _panel.querySelector("#dc-tg-match");
 
-        if (st) {
-            st.textContent = BOT_S.status.toUpperCase();
-            const isAct = BOT_S.status === "playing" || BOT_S.status === "our_turn";
-            const isMatch = BOT_S.status === "matching";
-            st.className = `dc-status ${isAct ? 'active' : BOT_S.status === 'thinking' ? 'thinking' : isMatch ? 'matching' : ''}`;
+        if (eng) {
+            eng.textContent = BOT_S.engineName || "Stockfish 16+";
         }
-        if (eng) eng.textContent = BOT_S.engineName || "Stockfish 16+";
-        if (mv) mv.textContent = BOT_S.lastMove || "-";
         if (tgPlay) {
-            tgPlay.textContent = BOT_CFG.autoPlay ? "AUTO PLAY: ON" : "AUTO PLAY: OFF";
-            tgPlay.className = `dc-btn ${BOT_CFG.autoPlay ? '' : 'off'}`;
+            tgPlay.className = `dc-circle-btn ${BOT_CFG.autoPlay ? 'active' : 'off'}`;
+            tgPlay.title = BOT_CFG.autoPlay ? "Auto Play: ON" : "Auto Play: OFF";
+            const ico = tgPlay.querySelector(".dc-ico");
+            if (ico) {
+                ico.className = `dc-ico ${BOT_CFG.autoPlay ? 'dc-ico-play' : 'dc-ico-pause'}`;
+            }
         }
         if (tgMatch) {
-            tgMatch.textContent = BOT_CFG.autoMatch ? "AUTO MATCH: ON" : "AUTO MATCH: OFF";
-            tgMatch.className = `dc-btn ${BOT_CFG.autoMatch ? '' : 'off'}`;
+            tgMatch.className = `dc-circle-btn ${BOT_CFG.autoMatch ? 'active' : 'off'}`;
+            tgMatch.title = BOT_CFG.autoMatch ? "Auto Match: ON" : "Auto Match: OFF";
         }
     }
 
