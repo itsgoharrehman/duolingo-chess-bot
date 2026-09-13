@@ -2209,7 +2209,7 @@
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
-    //  STREAMLINED CENTERED DOCK UI
+    //  BOTTOM-RIGHT CORNER WIDGET (COMPACT, CALM, ZERO GLOW, ZERO SLOP)
     // ══════════════════════════════════════════════════════════════════════════════
 
     let _panel = null;
@@ -2217,135 +2217,80 @@
     const STYLE = `
 #dc-dock {
     position: fixed;
-    bottom: 24px;
-    left: 50%;
-    transform: translateX(-50%);
+    bottom: 18px;
+    right: 18px;
     z-index: 2147483647;
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 12px;
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 20px;
+    padding: 3px 4px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
     user-select: none;
-    pointer-events: auto;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
-.dc-circle-btn {
-    width: 44px;
-    height: 44px;
+.dc-btn {
+    width: 28px;
+    height: 28px;
     border-radius: 50%;
     border: none;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: transform 0.15s ease, background 0.2s ease, box-shadow 0.2s ease;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.08);
-    padding: 0;
+    font-size: 12px;
+    line-height: 1;
+    transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
     outline: none;
+    padding: 0;
+    background: #27272a;
+    color: #71717a;
     flex-shrink: 0;
 }
 
-.dc-circle-btn:hover {
-    transform: scale(1.08);
+.dc-btn:hover {
+    filter: brightness(1.2);
 }
 
-.dc-circle-btn:active {
-    transform: scale(0.94);
+.dc-btn:active {
+    transform: scale(0.92);
 }
 
-/* Play button active (green) vs off (dark) */
+/* Calm solid matte colors — no stinging neons, no glassmorphism */
 #dc-tg-play.active {
-    background: #58cc02;
-    color: #ffffff;
-    box-shadow: 0 4px 18px rgba(88, 204, 2, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.15);
+    background: #166534;
+    color: #4ade80;
 }
 #dc-tg-play.off {
-    background: #1e293b;
-    color: #64748b;
+    background: #27272a;
+    color: #71717a;
 }
 
-/* Match button active (blue) vs off (dark) */
 #dc-tg-match.active {
-    background: #2563eb;
-    color: #ffffff;
-    box-shadow: 0 4px 18px rgba(37, 99, 235, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.15);
+    background: #1e3a8a;
+    color: #60a5fa;
 }
 #dc-tg-match.off {
-    background: #1e293b;
-    color: #64748b;
+    background: #27272a;
+    color: #71717a;
 }
 
-/* Pure CSS Icons: No SVGs, No text glyphs */
-.dc-ico {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    pointer-events: none;
-}
-
-.dc-ico-play {
-    width: 0;
-    height: 0;
-    border-top: 6px solid transparent;
-    border-bottom: 6px solid transparent;
-    border-left: 11px solid currentColor;
-    margin-left: 2px;
-}
-
-.dc-ico-pause {
-    display: flex;
-    gap: 3px;
-    align-items: center;
-    justify-content: center;
-}
-.dc-ico-pause::before,
-.dc-ico-pause::after {
-    content: "";
-    width: 3.5px;
-    height: 13px;
-    background: currentColor;
-    border-radius: 1px;
-}
-
-.dc-ico-next {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 1.5px;
-    margin-left: 1px;
-}
-.dc-ico-next::before,
-.dc-ico-next::after {
-    content: "";
-    width: 0;
-    height: 0;
-    border-top: 5px solid transparent;
-    border-bottom: 5px solid transparent;
-    border-left: 7px solid currentColor;
-}
-
-/* Center box showing engine name */
 #dc-engine-box {
-    height: 44px;
-    padding: 0 20px;
-    border-radius: 22px;
-    background: rgba(15, 23, 42, 0.92);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(12px);
+    padding: 0 10px;
     display: flex;
     align-items: center;
     justify-content: center;
-    min-width: 140px;
-    max-width: 260px;
-    box-sizing: border-box;
+    min-width: 90px;
+    max-width: 180px;
 }
 
 #dc-engine-name {
-    color: #38bdf8;
-    font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.3px;
+    color: #d4d4d8;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2369,15 +2314,11 @@
         _panel.id = "dc-dock";
 
         _panel.innerHTML = `
-            <button id="dc-tg-play" class="dc-circle-btn ${BOT_CFG.autoPlay ? 'active' : 'off'}" title="${BOT_CFG.autoPlay ? 'Auto Play: ON' : 'Auto Play: OFF'}">
-                <span class="dc-ico ${BOT_CFG.autoPlay ? 'dc-ico-play' : 'dc-ico-pause'}"></span>
-            </button>
+            <button id="dc-tg-play" class="dc-btn ${BOT_CFG.autoPlay ? 'active' : 'off'}" title="${BOT_CFG.autoPlay ? 'Auto Play: ON' : 'Auto Play: OFF'}">${BOT_CFG.autoPlay ? '▶' : '⏸'}</button>
             <div id="dc-engine-box">
                 <span id="dc-engine-name">${esc(BOT_S.engineName || "Stockfish 16+")}</span>
             </div>
-            <button id="dc-tg-match" class="dc-circle-btn ${BOT_CFG.autoMatch ? 'active' : 'off'}" title="${BOT_CFG.autoMatch ? 'Auto Match: ON' : 'Auto Match: OFF'}">
-                <span class="dc-ico dc-ico-next"></span>
-            </button>
+            <button id="dc-tg-match" class="dc-btn ${BOT_CFG.autoMatch ? 'active' : 'off'}" title="${BOT_CFG.autoMatch ? 'Auto Match: ON' : 'Auto Match: OFF'}">↻</button>
         `;
 
         document.body.appendChild(_panel);
@@ -2415,15 +2356,13 @@
             eng.textContent = BOT_S.engineName || "Stockfish 16+";
         }
         if (tgPlay) {
-            tgPlay.className = `dc-circle-btn ${BOT_CFG.autoPlay ? 'active' : 'off'}`;
+            tgPlay.className = `dc-btn ${BOT_CFG.autoPlay ? 'active' : 'off'}`;
+            tgPlay.textContent = BOT_CFG.autoPlay ? "▶" : "⏸";
             tgPlay.title = BOT_CFG.autoPlay ? "Auto Play: ON" : "Auto Play: OFF";
-            const ico = tgPlay.querySelector(".dc-ico");
-            if (ico) {
-                ico.className = `dc-ico ${BOT_CFG.autoPlay ? 'dc-ico-play' : 'dc-ico-pause'}`;
-            }
         }
         if (tgMatch) {
-            tgMatch.className = `dc-circle-btn ${BOT_CFG.autoMatch ? 'active' : 'off'}`;
+            tgMatch.className = `dc-btn ${BOT_CFG.autoMatch ? 'active' : 'off'}`;
+            tgMatch.textContent = "↻";
             tgMatch.title = BOT_CFG.autoMatch ? "Auto Match: ON" : "Auto Match: OFF";
         }
     }
