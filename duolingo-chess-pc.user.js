@@ -107,7 +107,7 @@
         moveHistory: [],
         status: "idle",
         authToken: null,
-        engineName: "Stockfish 17 GOD MODE",
+        engineName: "Stockfish 17",
         lastMove: null,
         userId: null,
     };
@@ -600,7 +600,7 @@
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
-    //  ENGINE: 100% PURE STOCKFISH 17 GOD MODE (ZERO OTHER ENGINES, ZERO FALLBACKS)
+    //  ENGINE: 100% PURE STOCKFISH 17 (ZERO OTHER ENGINES, ZERO FALLBACKS)
     // ══════════════════════════════════════════════════════════════════════════════
 
     /**
@@ -624,7 +624,7 @@
                 };
             }
         } catch (err) {
-            console.warn("[Stockfish 17 GOD MODE] Server communication error:", err?.message || err);
+            console.warn("[Stockfish 17] Server communication error:", err?.message || err);
         }
         return null;
     }
@@ -637,7 +637,7 @@
     }
 
     /**
-     * ⚡ TRUE GOD MODE Move Finder — 100% PURE STOCKFISH 17
+     * Stockfish 17 Move Finder
      *
      * - NO OTHER ENGINES.
      * - NO LOCAL MINIMAX SEARCH.
@@ -656,21 +656,17 @@
             const sfResult = await getStockfishBestMove(fen, targetDepth);
 
             if (sfResult && sfResult.move && legalUcis.includes(sfResult.move)) {
-                const mateStr = sfResult.mate !== null ? ` (M${Math.abs(sfResult.mate)})` : "";
-                const evalStr = (sfResult.mate === null && sfResult.eval !== null)
-                    ? ` (${sfResult.eval >= 0 ? "+" : ""}${sfResult.eval.toFixed(2)})`
-                    : "";
-                BOT_S.engineName = `SF17 D${targetDepth}${mateStr || evalStr}`;
+                BOT_S.engineName = "Stockfish 17";
                 return sfResult.move;
             }
 
             // If Stockfish 17 didn't respond or server is not running:
-            // NEVER play a weak fallback move. A fallback blunders, trades pieces, or loses!
-            BOT_S.engineName = "🔴 Waiting for Stockfish 17...";
-            console.warn("[Stockfish 17 GOD MODE] Waiting for Stockfish 17 — strictly ZERO fallbacks.");
+            // NEVER play a weak fallback move.
+            BOT_S.engineName = "Waiting for Stockfish 17...";
+            console.warn("[Stockfish 17] Waiting for Stockfish 17 - strictly zero fallbacks.");
             return null;
         } catch (err) {
-            console.error("[Stockfish 17 GOD MODE] Error:", err);
+            console.error("[Stockfish 17] Error:", err);
             return null;
         }
     }
@@ -1861,7 +1857,7 @@
                 ${BOT_CFG.autoPlay ? SVG_PLAY : SVG_PAUSE}
             </button>
             <div id="dc-engine-box">
-                <span id="dc-engine-name">${esc(BOT_S.engineName || "Stockfish 17 GOD MODE")}</span>
+                <span id="dc-engine-name">${esc(BOT_S.engineName || "Stockfish 17")}</span>
             </div>
             <button id="dc-tg-match" class="dc-btn ${BOT_CFG.autoMatch ? 'active' : 'off'}" title="${BOT_CFG.autoMatch ? 'Auto Match: ON' : 'Auto Match: OFF'}">
                 ${SVG_MATCH}
@@ -1900,7 +1896,7 @@
         const tgMatch = _panel.querySelector("#dc-tg-match");
 
         if (eng) {
-            eng.textContent = BOT_S.engineName || "Stockfish 17 GOD MODE";
+            eng.textContent = BOT_S.engineName || "Stockfish 17";
         }
         if (tgPlay) {
             tgPlay.className = `dc-btn ${BOT_CFG.autoPlay ? 'active' : 'off'}`;

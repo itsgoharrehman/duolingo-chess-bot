@@ -8,12 +8,12 @@ const HOST = '127.0.0.1';
 const ENGINE_PATH = path.join(__dirname, 'engine', 'stockfish.exe');
 
 if (!fs.existsSync(ENGINE_PATH)) {
-    console.error(`❌ Error: Stockfish binary not found at ${ENGINE_PATH}`);
+    console.error(`Error: Stockfish binary not found at ${ENGINE_PATH}`);
     console.error('Please run: node setup-stockfish.js first!');
     process.exit(1);
 }
 
-console.log(`[Stockfish 17 GOD MODE] Starting native engine: ${ENGINE_PATH}...`);
+console.log(`[Stockfish 17] Starting native engine: ${ENGINE_PATH}...`);
 const sf = spawn(ENGINE_PATH, [], { stdio: ['pipe', 'pipe', 'pipe'] });
 
 let isReady = false;
@@ -28,7 +28,7 @@ function startSearch(job) {
     // Safety timeout: abort search if it hangs longer than 20 seconds
     currentJob.timeoutId = setTimeout(() => {
         if (currentJob === job) {
-            console.warn(`⚠️ [Stockfish 17] Search exceeded 20s, forcing stop`);
+            console.warn(`[Stockfish 17] Search exceeded 20s, forcing stop`);
             sf.stdin.write('stop\n');
         }
     }, 20000);
@@ -52,7 +52,7 @@ sf.stdout.on('data', (chunk) => {
             sf.stdin.write('isready\n');
         } else if (line === 'readyok') {
             isReady = true;
-            console.log('⚡ Stockfish 17 GOD MODE ready (4 threads, 128MB hash, MultiPV 1, Skill Level 20)');
+            console.log('Stockfish 17 ready (4 threads, 128MB hash, MultiPV 1, Skill Level 20)');
             console.log(`   Listening on http://${HOST}:${PORT}`);
         } else if (line.startsWith('info ') && line.includes('score ')) {
             if (currentJob) {
@@ -68,11 +68,7 @@ sf.stdout.on('data', (chunk) => {
             if (currentJob) {
                 if (currentJob.timeoutId) clearTimeout(currentJob.timeoutId);
                 const dur = Date.now() - currentJob.t0;
-                const evalStr = currentJob.lastMate !== null
-                    ? `Mate in ${currentJob.lastMate}`
-                    : (currentJob.lastEval >= 0 ? `+${currentJob.lastEval.toFixed(2)}` : currentJob.lastEval.toFixed(2));
-
-                console.log(`⚡ [GOD MODE] Move: ${move} | Eval: ${evalStr} | Depth: ${currentJob.depth} | ${dur}ms`);
+                console.log(`[Stockfish 17] Move: ${move} | Depth: ${currentJob.depth} | ${dur}ms`);
 
                 const payload = JSON.stringify({
                     success: move && move !== '(none)',
@@ -132,7 +128,7 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({
             status: 'ok',
             ready: isReady,
-            engine: 'Stockfish 17 GOD MODE (Pure 100%)',
+            engine: 'Stockfish 17',
             threads: 4,
             hash: 128,
             multiPV: 1,
@@ -151,7 +147,7 @@ const server = http.createServer((req, res) => {
         pendingJob = null;
         sf.stdin.write('ucinewgame\n');
         sf.stdin.write('isready\n');
-        console.log('🔄 [Stockfish 17] New game — hash table reset');
+        console.log('[Stockfish 17] New game - hash table reset');
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, message: 'Stockfish 17 reset for new game' }));
         return;
@@ -205,6 +201,6 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-    console.log(`🚀 Stockfish 17 GOD MODE Server running on http://${HOST}:${PORT}`);
+    console.log(`Stockfish 17 Server running on http://${HOST}:${PORT}`);
     console.log(`   Endpoints: /bestmove?fen=...&depth=15 | /newgame | /health`);
 });
