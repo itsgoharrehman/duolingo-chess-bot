@@ -107,7 +107,7 @@
         moveHistory: [],
         status: "idle",
         authToken: null,
-        engineName: "Embedded GM",
+        engineName: "Stockfish 17 GOD MODE",
         lastMove: null,
         userId: null,
     };
@@ -130,78 +130,8 @@
     loadSettings();
 
     // ══════════════════════════════════════════════════════════════════════════════
-    //  FULL EMBEDDED CHESS ENGINE (ZERO NETWORK DEPENDENCY)
+    //  FASTCHESS: LIGHTWEIGHT BOARD STATE & LEGAL MOVE GENERATOR (CHESS RULES ONLY)
     // ══════════════════════════════════════════════════════════════════════════════
-
-    const PIECE_VALS = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
-
-    const PST_PAWN = [
-        0, 0, 0, 0, 0, 0, 0, 0,
-        50, 50, 50, 50, 50, 50, 50, 50,
-        10, 10, 20, 30, 30, 20, 10, 10,
-        5, 5, 10, 25, 25, 10, 5, 5,
-        0, 0, 0, 20, 20, 0, 0, 0,
-        5, -5, -10, 0, 0, -10, -5, 5,
-        5, 10, 10, -20, -20, 10, 10, 5,
-        0, 0, 0, 0, 0, 0, 0, 0
-    ];
-
-    const PST_KNIGHT = [
-        -50, -40, -30, -30, -30, -30, -40, -50,
-        -40, -20, 0, 0, 0, 0, -20, -40,
-        -30, 0, 10, 15, 15, 10, 0, -30,
-        -30, 5, 15, 20, 20, 15, 5, -30,
-        -30, 0, 15, 20, 20, 15, 0, -30,
-        -30, 5, 10, 15, 15, 10, 5, -30,
-        -40, -20, 0, 5, 5, 0, -20, -40,
-        -50, -40, -30, -30, -30, -30, -40, -50,
-    ];
-
-    const PST_BISHOP = [
-        -20, -10, -10, -10, -10, -10, -10, -20,
-        -10, 0, 0, 0, 0, 0, 0, -10,
-        -10, 0, 5, 10, 10, 5, 0, -10,
-        -10, 5, 5, 10, 10, 5, 5, -10,
-        -10, 0, 10, 10, 10, 10, 0, -10,
-        -10, 10, 10, 10, 10, 10, 10, -10,
-        -10, 5, 0, 0, 0, 0, 5, -10,
-        -20, -10, -10, -10, -10, -10, -10, -20,
-    ];
-
-    const PST_ROOK = [
-        0, 0, 0, 0, 0, 0, 0, 0,
-        5, 10, 10, 10, 10, 10, 10, 5,
-        -5, 0, 0, 0, 0, 0, 0, -5,
-        -5, 0, 0, 0, 0, 0, 0, -5,
-        -5, 0, 0, 0, 0, 0, 0, -5,
-        -5, 0, 0, 0, 0, 0, 0, -5,
-        -5, 0, 0, 0, 0, 0, 0, -5,
-        0, 0, 0, 5, 5, 0, 0, 0
-    ];
-
-    const PST_QUEEN = [
-        -20, -10, -10, -5, -5, -10, -10, -20,
-        -10, 0, 0, 0, 0, 0, 0, -10,
-        -10, 0, 5, 5, 5, 5, 0, -10,
-        -5, 0, 5, 5, 5, 5, 0, -5,
-        0, 0, 5, 5, 5, 5, 0, -5,
-        -10, 5, 5, 5, 5, 5, 0, -10,
-        -10, 0, 5, 0, 0, 0, 0, -10,
-        -20, -10, -10, -5, -5, -10, -10, -20
-    ];
-
-    const PST_KING = [
-        -30, -40, -40, -50, -50, -40, -40, -30,
-        -30, -40, -40, -50, -50, -40, -40, -30,
-        -30, -40, -40, -50, -50, -40, -40, -30,
-        -30, -40, -40, -50, -50, -40, -40, -30,
-        -20, -30, -30, -40, -40, -30, -30, -20,
-        -10, -20, -20, -20, -20, -20, -20, -10,
-        20, 20, 0, 0, 0, 0, 20, 20,
-        20, 30, 10, 0, 0, 10, 30, 20
-    ];
-
-    const PST_MAP = { p: PST_PAWN, n: PST_KNIGHT, b: PST_BISHOP, r: PST_ROOK, q: PST_QUEEN, k: PST_KING };
 
     class FastChess {
         constructor(fen) {
@@ -561,313 +491,9 @@
             return legal;
         }
 
-        evaluate() {
-            let score = 0;
-            let wKingIdx = -1, bKingIdx = -1;
-
-            for (let i = 0; i < 64; i++) {
-                const p = this.board[i];
-                if (!p) continue;
-                let val = PIECE_VALS[p.type] || 0;
-                const r = Math.floor(i / 8), f = i % 8;
-                const tableIdx = p.color === "w" ? i : (7 - r) * 8 + f;
-                const pst = PST_MAP[p.type];
-                if (pst) val += pst[tableIdx] || 0;
-
-                if (p.type === "k") {
-                    if (p.color === "w") wKingIdx = i; else bKingIdx = i;
-                }
-
-                // Passed pawn progression bonus (aggressive promotion to Queen)
-                if (p.type === "p") {
-                    const advance = p.color === "w" ? (7 - r) : r;
-                    val += advance * advance * 15; // increased exponential bonus for advancing pawns
-                }
-
-                score += p.color === "w" ? val : -val;
-            }
-
-            // Endgame Mop-Up Evaluation:
-            // When one side has winning advantage, aggressively drive the opponent king to edge and corner
-            const margin = score;
-            if (Math.abs(margin) > 200 && wKingIdx !== -1 && bKingIdx !== -1) {
-                const winningColor = margin > 0 ? "w" : "b";
-                const loserKingIdx = winningColor === "w" ? bKingIdx : wKingIdx;
-                const winnerKingIdx = winningColor === "w" ? wKingIdx : bKingIdx;
-
-                const lFile = loserKingIdx % 8, lRank = Math.floor(loserKingIdx / 8);
-                const wFile = winnerKingIdx % 8, wRank = Math.floor(winnerKingIdx / 8);
-
-                // 1. Push losing king to corners / edges
-                const centerDist = Math.max(Math.abs(lFile - 3.5), Math.abs(lRank - 3.5));
-                const pushToCornerBonus = Math.round(centerDist * 50);
-
-                // 2. Bring winning king close to losing king
-                const kingDist = Math.abs(wFile - lFile) + Math.abs(wRank - lRank);
-                const closeKingBonus = Math.round((14 - kingDist) * 25);
-
-                const mopUpBonus = pushToCornerBonus + closeKingBonus;
-                score += (winningColor === "w" ? mopUpBonus : -mopUpBonus);
-            }
-
-            // Check bonus: checking the opponent restricts their moves and forces rapid checkmate
-            const them = this.turn === "w" ? "b" : "w";
-            if (this.inCheck(them)) {
-                score += (this.turn === "w" ? 150 : -150);
-            }
-
-            return this.turn === "w" ? score : -score;
-        }
-
-        /**
-         * Quiescence search — extends search through capture chains and promotions
-         * to prevent horizon-effect blunders
-         */
-        quiescence(alpha, beta, qdepth = 3) {
-            const standPat = this.evaluate();
-            if (qdepth === 0) return standPat;
-            if (standPat >= beta) return beta;
-            if (alpha < standPat) alpha = standPat;
-
-            const tacticalMoves = this.getLegalMoves().filter(m => m.capture || m.promo);
-            if (tacticalMoves.length === 0) return standPat;
-
-            tacticalMoves.sort((a, b) => {
-                const aVal = (a.promo ? 20000 : 0) + (a.capture ? (PIECE_VALS[a.capture] || 100) * 10 - (PIECE_VALS[this.board[a.from]?.type] || 100) : 0);
-                const bVal = (b.promo ? 20000 : 0) + (b.capture ? (PIECE_VALS[b.capture] || 100) * 10 - (PIECE_VALS[this.board[b.from]?.type] || 100) : 0);
-                return bVal - aVal;
-            });
-
-            for (const m of tacticalMoves) {
-                const clone = this.clone();
-                clone.makeMove(m);
-                const score = -clone.quiescence(-beta, -alpha, qdepth - 1);
-                if (score >= beta) return beta;
-                if (score > alpha) alpha = score;
-            }
-            return alpha;
-        }
-
-        /**
-         * Negamax with alpha-beta pruning
-         * Terminal conditions:
-         *  - Checkmate = -100000 - (depth * 1000) (penalizes slow mates; higher depth remaining = faster mate)
-         *  - Stalemate = 90000 (returned for stalemated player so attacker evaluates move as -90000 catastrophic loss)
-         */
-        minimax(depth, alpha, beta) {
-            if (depth === 0) return this.quiescence(alpha, beta, 3);
-
-            const moves = this.getLegalMoves();
-            if (moves.length === 0) {
-                if (this.inCheck(this.turn)) return -100000 - (depth * 1000);
-                return 90000; // Stalemate = DRAW! Attacker evaluating this move gets -90000!
-            }
-
-            // Fast terminal mate check: if any move delivers instant checkmate, score it immediately
-            for (const m of moves) {
-                const clone = this.clone();
-                clone.makeMove(m);
-                if (clone.getLegalMoves().length === 0 && clone.inCheck(clone.turn)) {
-                    return 100000 + (depth * 1000);
-                }
-            }
-
-            // Move ordering: promotions (20000), MVV-LVA captures (10000+), center closeness
-            moves.sort((a, b) => {
-                let aScore = 0, bScore = 0;
-                if (a.promo) aScore += 20000;
-                if (b.promo) bScore += 20000;
-                if (a.capture) {
-                    const vic = PIECE_VALS[a.capture] || 100;
-                    const att = PIECE_VALS[this.board[a.from]?.type] || 100;
-                    aScore += 10000 + vic * 10 - att;
-                }
-                if (b.capture) {
-                    const vic = PIECE_VALS[b.capture] || 100;
-                    const att = PIECE_VALS[this.board[b.from]?.type] || 100;
-                    bScore += 10000 + vic * 10 - att;
-                }
-                const aToR = Math.floor(a.to / 8), aToC = a.to % 8;
-                const bToR = Math.floor(b.to / 8), bToC = b.to % 8;
-                aScore += (7 - (Math.abs(aToR - 3.5) + Math.abs(aToC - 3.5))) * 5;
-                bScore += (7 - (Math.abs(bToR - 3.5) + Math.abs(bToC - 3.5))) * 5;
-                return bScore - aScore;
-            });
-
-            let maxEval = -Infinity;
-            for (const m of moves) {
-                const clone = this.clone();
-                clone.makeMove(m);
-                const ev = -clone.minimax(depth - 1, -beta, -alpha);
-                if (ev > maxEval) maxEval = ev;
-                if (ev > alpha) alpha = ev;
-                if (alpha >= beta) break;
-            }
-            return maxEval;
-        }
-
-        /**
-         * Find the best move with absolute draw-prevention & shortest-mate priority:
-         * 1. Instant checkmate scan (0ms)
-         * 2. Forced mate-in-2 scanner (<5ms)
-         * 3. Filter out moves causing stalemate or threefold repetition
-         * 4. Multi-turn anti-oscillation penalty
-         * 5. Negamax search with endgame depth acceleration
-         */
-        getBestMove(depth = 3) {
-            const moves = this.getLegalMoves();
-            if (!moves.length) return null;
-
-            // 1. INSTANT CHECKMATE SCAN (0ms)
-            for (const m of moves) {
-                const clone = this.clone();
-                clone.makeMove(m);
-                const oppLegal = clone.getLegalMoves();
-                if (oppLegal.length === 0 && clone.inCheck(clone.turn)) {
-                    return this.moveToUci(m);
-                }
-            }
-
-            // 2. FORCED MATE-IN-2 SCAN (<5ms)
-            const mateIn2 = findMateIn2(this);
-            if (mateIn2 && isMoveDrawSafe(this, mateIn2)) return mateIn2;
-
-            // 3. SEPARATE MOVES INTO "SAFE" (non-drawing) AND "RISKY" (drawing) POOLS
-            const safeMoves = [];
-            const riskyMoves = [];
-
-            for (const m of moves) {
-                const uci = this.moveToUci(m);
-                const clone = this.clone();
-                clone.makeMove(m);
-                const oppLegal = clone.getLegalMoves();
-
-                // Strict: does this move cause stalemate?
-                const causesStalemate = oppLegal.length === 0 && !clone.inCheck(clone.turn);
-
-                // Strict: does this move lead to a position that was already visited?
-                const nextKey = getPositionKey(clone.toFen());
-                const causesRepetition = (_gamePositionCounts.get(nextKey) || 0) >= 1;
-
-                // Strict: does this move immediately reverse the last bot move?
-                let isOscillation = false;
-                if (_botMoveHistory && _botMoveHistory.length > 0) {
-                    const prev = _botMoveHistory[0];
-                    if (uci.slice(0, 2) === prev.slice(2, 4) && uci.slice(2, 4) === prev.slice(0, 2)) {
-                        isOscillation = true;
-                    }
-                }
-
-                if (causesStalemate || causesRepetition || isOscillation) {
-                    riskyMoves.push(m);
-                } else {
-                    safeMoves.push(m);
-                }
-            }
-
-            // Use safe moves if available; only use risky moves if literally no other legal move exists
-            const searchPool = safeMoves.length > 0 ? safeMoves : riskyMoves.length > 0 ? riskyMoves : moves;
-
-            // Move ordering for search
-            searchPool.sort((a, b) => {
-                const aScore = (a.promo ? 12000 : 0) + (a.capture ? (PIECE_VALS[a.capture] || 100) + 10000 : 0);
-                const bScore = (b.promo ? 12000 : 0) + (b.capture ? (PIECE_VALS[b.capture] || 100) + 10000 : 0);
-                return bScore - aScore;
-            });
-
-            let bestMove = searchPool[0];
-            let bestVal = -Infinity;
-            let alpha = -Infinity;
-            const beta = Infinity;
-
-            // Dynamic depth: In late midgame / endgame (<= 14 pieces), depth 4 takes <30ms; in deep endgame (<= 8 pieces), depth 5 takes <60ms
-            let searchDepth = depth;
-            let pieceCount = 0;
-            for (let i = 0; i < 64; i++) if (this.board[i]) pieceCount++;
-            if (pieceCount <= 14 && searchDepth < 4) searchDepth = 4;
-            if (pieceCount <= 8 && searchDepth < 5) searchDepth = 5;
-
-            for (const m of searchPool) {
-                const uci = this.moveToUci(m);
-                const clone = this.clone();
-                clone.makeMove(m);
-                let ev = -clone.minimax(searchDepth - 1, -beta, -alpha);
-
-                // Severe penalty for oscillation (piece moving back to where it just came from)
-                if (_botMoveHistory && _botMoveHistory.length > 0) {
-                    const prev = _botMoveHistory[0];
-                    if (uci.slice(0, 2) === prev.slice(2, 4) && uci.slice(2, 4) === prev.slice(0, 2)) {
-                        ev -= 100000;
-                    }
-                    for (let h = 1; h < Math.min(6, _botMoveHistory.length); h++) {
-                        const oldMv = _botMoveHistory[h];
-                        if (uci.slice(2, 4) === oldMv.slice(0, 2) && !m.capture && !clone.inCheck(clone.turn)) {
-                            ev -= 5000;
-                        }
-                    }
-                }
-
-                // Severe penalty for revisited positions (treated as virtually lost)
-                const nextKey = getPositionKey(clone.toFen());
-                const seenCount = _gamePositionCounts.get(nextKey) || 0;
-                if (seenCount >= 1) {
-                    ev -= 100000;
-                }
-
-                if (ev > bestVal) {
-                    bestVal = ev;
-                    bestMove = m;
-                }
-                if (ev > alpha) alpha = ev;
-            }
-            return this.moveToUci(bestMove);
-        }
-
         moveToUci(m) {
             return `${this._idxToSq(m.from)}${this._idxToSq(m.to)}${m.promo || ""}`;
         }
-    }
-
-    /**
-     * Forced Mate-in-2 Scanner: checks if any legal move guarantees checkmate
-     * on the subsequent turn for all possible opponent replies.
-     */
-    function findMateIn2(engine) {
-        const legalMoves = engine.getLegalMoves();
-        for (const m1 of legalMoves) {
-            const uci1 = engine.moveToUci(m1);
-            if (!isMoveDrawSafe(engine, uci1)) continue;
-
-            const clone1 = engine.clone();
-            clone1.makeMove(m1);
-            const oppLegal = clone1.getLegalMoves();
-            if (oppLegal.length === 0) continue; // Mate in 1 handled separately
-            if (oppLegal.length > 8) continue; // Fast cutoff for speed
-
-            let allLeadToMate = true;
-            for (const oppM of oppLegal) {
-                const clone2 = clone1.clone();
-                clone2.makeMove(oppM);
-                const replies = clone2.getLegalMoves();
-                let hasMate = false;
-                for (const m2 of replies) {
-                    const clone3 = clone2.clone();
-                    clone3.makeMove(m2);
-                    if (clone3.getLegalMoves().length === 0 && clone3.inCheck(clone3.turn)) {
-                        hasMate = true;
-                        break;
-                    }
-                }
-                if (!hasMate) {
-                    allLeadToMate = false;
-                    break;
-                }
-            }
-            if (allLeadToMate) {
-                return uci1;
-            }
-        }
-        return null;
     }
 
     /**
@@ -948,38 +574,6 @@
         });
     }
 
-    function getBookMove(fen) {
-        const fenSimple = fen.split(" ").slice(0, 4).join(" ");
-        const openingBook = {
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -": "e2e4",
-            "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "g1f3",
-            "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -": "f1c4",
-            "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq -": "d2d3",
-            "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq -": "c2c3",
-            "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "g1f3",
-            "rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq -": "d7d6",
-            "rnbqkbnr/pp2pppp/3p4/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq -": "d2d4",
-            "rnbqkbnr/pppp1ppp/4p3/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "d2d4",
-            "rnbqkbnr/pppp1ppp/4p3/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3": "d7d5",
-            "rnbqkbnr/pppp1ppp/8/3p4/3PP3/8/PPP2PPP/RNBQKBNR w KQkq -": "e4e5",
-            "rnbqkbnr/pp1ppppp/2p5/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "d2d4",
-            "rnbqkbnr/pp1ppppp/2p5/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3": "d7d5",
-            "rnbqkbnr/pp2pppp/2p5/3p4/3PP3/8/PPP2PPP/RNBQKBNR w KQkq -": "e4e5",
-            "rnbqkbnr/ppppp1pp/8/5p2/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "e4f5",
-            "rnbqkbnr/pppppp1p/8/6p1/4P3/8/PPPP1PPP/RNBQKBNR w KQkq -": "d2d4",
-            "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR w KQkq -": "c2c4",
-            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3": "e7e5",
-            "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq d3": "d7d5",
-            "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq -": "d7d5",
-            "rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq c3": "e7e5",
-            "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq -": "b8c6",
-            "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq -": "g8f6",
-            "r1bqkbnr/pppp1ppp/2n5/4p3/1bB1P3/5N2/PPPP1PPP/RNBQK2R b KQkq -": "g8f6",
-            "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq -": "a7a6",
-        };
-        return openingBook[fenSimple] ?? null;
-    }
-
     function cleanFenForApi(fen) {
         if (!fen || typeof fen !== "string") return "";
         const parts = fen.trim().split(/\s+/);
@@ -1006,52 +600,33 @@
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
-    //  ENGINE: STOCKFISH 17 GOD MODE — MultiPV, Draw-Safe Cascade, Auto-Retry
+    //  ENGINE: 100% PURE STOCKFISH 17 GOD MODE (ZERO OTHER ENGINES, ZERO FALLBACKS)
     // ══════════════════════════════════════════════════════════════════════════════
 
     /**
-     * Fetch top 3 candidate moves from local Stockfish 17 (MultiPV 3).
-     * Returns array: [{ move, mate, eval, name }, ...] or empty array on failure.
-     * Timeout: 10 seconds (enough for depth 15 on i5-2400S in complex positions).
+     * Query native Stockfish 17 bridge server on 127.0.0.1:3333.
+     * Single PV (MultiPV 1), 4 CPU threads, 128MB hash, NNUE evaluation.
+     * Reaches depth 15 in ~200-500ms with grandmaster lethal accuracy.
+     * Returns: { move, eval, mate } or null on failure.
      */
-    async function getLocalStockfishMoves(engine, fen, depth = 15) {
+    async function getStockfishBestMove(fen, depth = 15) {
         try {
             const cleanedFen = cleanFenForApi(fen);
             const data = await gmHttpFetch(
-                `http://127.0.0.1:3333/bestmove?fen=${encodeURIComponent(cleanedFen)}&depth=${depth}&multipv=3`,
-                10000  // 10s timeout — enough for depth 15 on complex positions
+                `http://127.0.0.1:3333/bestmove?fen=${encodeURIComponent(cleanedFen)}&depth=${depth}`,
+                15000  // 15s timeout
             );
-            if (!data?.success) return [];
-
-            const candidates = data.candidates || [];
-            const results = [];
-            for (const c of candidates) {
-                if (!c.move || !validUCI(c.move.trim())) continue;
-                const mv = c.move.trim();
-                const mateStr = c.mate ? ` (M${Math.abs(c.mate)})` : "";
-                results.push({
-                    move: mv,
-                    mate: c.mate || null,
-                    eval: c.eval || 0,
-                    name: `SF17 D${depth}${mateStr} #${c.rank || results.length + 1}`
-                });
+            if (data?.success && data.move && validUCI(data.move.trim())) {
+                return {
+                    move: data.move.trim(),
+                    eval: data.evaluation !== undefined && data.evaluation !== null ? data.evaluation : null,
+                    mate: data.mate !== undefined && data.mate !== null ? data.mate : null
+                };
             }
-
-            // Fallback: if candidates array empty but data.move exists (old server format)
-            if (results.length === 0 && data.move && validUCI(data.move.trim())) {
-                const mv = data.move.trim();
-                const mateStr = data.mate ? ` (M${Math.abs(data.mate)})` : "";
-                results.push({
-                    move: mv,
-                    mate: data.mate || null,
-                    eval: data.evaluation || 0,
-                    name: `Stockfish 17 D${depth}${mateStr}`
-                });
-            }
-
-            return results;
-        } catch (_) { }
-        return [];
+        } catch (err) {
+            console.warn("[Stockfish 17 GOD MODE] Server communication error:", err?.message || err);
+        }
+        return null;
     }
 
     /** Signal new game to Stockfish server (clears hash table for fresh analysis). */
@@ -1062,69 +637,13 @@
     }
 
     /**
-     * Validate an external move against draw-prevention rules.
-     * Returns true if the move is SAFE (no stalemate, no repetition, no oscillation).
+     * ⚡ TRUE GOD MODE Move Finder — 100% PURE STOCKFISH 17
      *
-     * RELAXED: Position must be seen >= 2 times (not >= 1) to be banned.
-     * This still 100% prevents threefold repetition while allowing Stockfish's
-     * best move in positions that naturally recur once.
-     */
-    function isMoveDrawSafe(engine, moveUci) {
-        try {
-            const clone = engine.clone();
-            const from = engine._sqToIdx(moveUci.slice(0, 2));
-            const to = engine._sqToIdx(moveUci.slice(2, 4));
-            const promo = moveUci.length >= 5 ? moveUci[4] : null;
-
-            const legals = clone.getLegalMoves();
-            const matchLegal = legals.find(m => clone.moveToUci(m) === moveUci);
-            if (matchLegal) {
-                clone.makeMove(matchLegal);
-            } else {
-                clone.makeMove({ from, to, promo });
-            }
-            const oppLegal = clone.getLegalMoves();
-
-            // 1. Strict: NEVER allow a stalemate move (opponent has 0 moves without check)
-            const isStalemate = oppLegal.length === 0 && !clone.inCheck(clone.turn);
-            if (isStalemate) return false;
-
-            // 2. RELAXED: Ban positions seen >= 2 times (prevents 3-fold while preserving Stockfish quality)
-            // A position seen once is normal play. Seen twice = 2nd repetition, ban to prevent 3rd.
-            const nextKey = getPositionKey(clone.toFen());
-            if ((_gamePositionCounts.get(nextKey) || 0) >= 2) return false;
-
-            // 3. Anti-oscillation — NEVER immediately reverse the last bot move
-            if (_botMoveHistory && _botMoveHistory.length > 0) {
-                const prev = _botMoveHistory[0];
-                if (moveUci.slice(0, 2) === prev.slice(2, 4) && moveUci.slice(2, 4) === prev.slice(0, 2)) {
-                    return false;
-                }
-            }
-
-            // 4. 2-step oscillation prevention — piece returning to square from 2 moves ago without capture or check
-            if (_botMoveHistory && _botMoveHistory.length > 1) {
-                const prev2 = _botMoveHistory[1];
-                if (moveUci.slice(0, 2) === prev2.slice(2, 4) && moveUci.slice(2, 4) === prev2.slice(0, 2)) {
-                    if (!clone.inCheck(clone.turn)) return false;
-                }
-            }
-
-            return true;
-        } catch (_) {
-            return true; // On error, allow the move
-        }
-    }
-
-    /**
-     * ⚡ GOD MODE Move Finder — Stockfish 17 MultiPV with Draw-Safe Cascade:
-     *
-     * 1. Instant opening book (0ms)
-     * 2. Instant checkmate scan (0ms)
-     * 3. Forced mate-in-2 scanner (<5ms)
-     * 4. STOCKFISH 17 MULTIPV 3 — tries top 3 moves, picks first draw-safe one
-     * 5. AUTO-RETRY at depth 12 if depth 15 times out (still ~3500 Elo)
-     * 6. Emergency tactical search (depth 4) only if server completely offline
+     * - NO OTHER ENGINES.
+     * - NO LOCAL MINIMAX SEARCH.
+     * - NO HARDCODED OPENING BOOK OVERRIDES.
+     * - ZERO FALLBACKS TO WEAK MOVES.
+     * - Every move is calculated by Stockfish 17 NNUE at full depth.
      */
     async function getBestMove(fen) {
         try {
@@ -1133,72 +652,27 @@
             if (!legalMoves || legalMoves.length === 0) return null;
             const legalUcis = legalMoves.map(m => engine.moveToUci(m));
 
-            // 1. Opening Book (0ms)
-            const bookMv = getBookMove(fen);
-            if (bookMv && legalUcis.includes(bookMv) && isMoveDrawSafe(engine, bookMv)) {
-                BOT_S.engineName = "Book Opening";
-                return bookMv;
-            }
-
-            // 2. Instant Checkmate Scan in 1 move (0ms finish)
-            for (const m of legalMoves) {
-                const clone = engine.clone();
-                clone.makeMove(m);
-                const oppLegal = clone.getLegalMoves();
-                if (oppLegal.length === 0 && clone.inCheck(clone.turn)) {
-                    BOT_S.engineName = "Instant Mate (M1)";
-                    return engine.moveToUci(m);
-                }
-            }
-
-            // 3. Forced Mate-in-2 Scan (<5ms finish)
-            const mateIn2 = findMateIn2(engine);
-            if (mateIn2 && legalUcis.includes(mateIn2) && isMoveDrawSafe(engine, mateIn2)) {
-                BOT_S.engineName = "Forced Mate (M2)";
-                return mateIn2;
-            }
-
-            // 4. STOCKFISH 17 GOD MODE — MultiPV 3 with Draw-Safe Cascade
             const targetDepth = BOT_CFG.stockfishDepth || 15;
-            let sfMoves = await getLocalStockfishMoves(engine, fen, targetDepth);
+            const sfResult = await getStockfishBestMove(fen, targetDepth);
 
-            // 5. AUTO-RETRY: If depth 15 returned nothing, retry at depth 12 (faster, still ~3500 Elo)
-            if (sfMoves.length === 0) {
-                sfMoves = await getLocalStockfishMoves(engine, fen, 12);
+            if (sfResult && sfResult.move && legalUcis.includes(sfResult.move)) {
+                const mateStr = sfResult.mate !== null ? ` (M${Math.abs(sfResult.mate)})` : "";
+                const evalStr = (sfResult.mate === null && sfResult.eval !== null)
+                    ? ` (${sfResult.eval >= 0 ? "+" : ""}${sfResult.eval.toFixed(2)})`
+                    : "";
+                BOT_S.engineName = `SF17 D${targetDepth}${mateStr || evalStr}`;
+                return sfResult.move;
             }
 
-            // Cascade through Stockfish's top 3 moves — pick first one that is draw-safe
-            if (sfMoves.length > 0) {
-                for (const candidate of sfMoves) {
-                    if (candidate.move && legalUcis.includes(candidate.move) && isMoveDrawSafe(engine, candidate.move)) {
-                        BOT_S.engineName = candidate.name || `Stockfish 17 D${targetDepth}`;
-                        return candidate.move;
-                    }
-                }
-                // All 3 moves were draw-unsafe — still play Stockfish's #1 if it's legal
-                // (Stockfish's move is ALWAYS better than our tactical search, even if it risks draw)
-                const best = sfMoves[0];
-                if (best.move && legalUcis.includes(best.move)) {
-                    BOT_S.engineName = `${best.name || "SF17"} ⚠️`;
-                    return best.move;
-                }
-            }
-
-            // 6. EMERGENCY: Local bridge server completely offline — use tactical search (depth 4)
-            BOT_S.engineName = "🔴 Start run-local-stockfish.bat";
-            const emergencyTactical = engine.getBestMove(4);
-            if (emergencyTactical && legalUcis.includes(emergencyTactical)) {
-                return emergencyTactical;
-            }
-
-            return emergencyTactical || legalUcis[0];
-        } catch (_) {
-            try {
-                const fallback = new FastChess(fen);
-                return fallback.getBestMove(3) || null;
-            } catch (_) { }
+            // If Stockfish 17 didn't respond or server is not running:
+            // NEVER play a weak fallback move. A fallback blunders, trades pieces, or loses!
+            BOT_S.engineName = "🔴 Waiting for Stockfish 17...";
+            console.warn("[Stockfish 17 GOD MODE] Waiting for Stockfish 17 — strictly ZERO fallbacks.");
+            return null;
+        } catch (err) {
+            console.error("[Stockfish 17 GOD MODE] Error:", err);
+            return null;
         }
-        return null;
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
@@ -2387,7 +1861,7 @@
                 ${BOT_CFG.autoPlay ? SVG_PLAY : SVG_PAUSE}
             </button>
             <div id="dc-engine-box">
-                <span id="dc-engine-name">${esc(BOT_S.engineName || "Stockfish 16+")}</span>
+                <span id="dc-engine-name">${esc(BOT_S.engineName || "Stockfish 17 GOD MODE")}</span>
             </div>
             <button id="dc-tg-match" class="dc-btn ${BOT_CFG.autoMatch ? 'active' : 'off'}" title="${BOT_CFG.autoMatch ? 'Auto Match: ON' : 'Auto Match: OFF'}">
                 ${SVG_MATCH}
@@ -2426,7 +1900,7 @@
         const tgMatch = _panel.querySelector("#dc-tg-match");
 
         if (eng) {
-            eng.textContent = BOT_S.engineName || "Stockfish 16+";
+            eng.textContent = BOT_S.engineName || "Stockfish 17 GOD MODE";
         }
         if (tgPlay) {
             tgPlay.className = `dc-btn ${BOT_CFG.autoPlay ? 'active' : 'off'}`;

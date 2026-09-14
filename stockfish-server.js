@@ -1,7 +1,6 @@
 const http = require('http');
 const { spawn } = require('child_process');
 const path = require('path');
-const url = require('url');
 const fs = require('fs');
 
 const PORT = 3333;
@@ -14,106 +13,88 @@ if (!fs.existsSync(ENGINE_PATH)) {
     process.exit(1);
 }
 
-// Spawn persistent Stockfish process
-console.log(`[Stockfish] Starting ${ENGINE_PATH}...`);
+console.log(`[Stockfish 17 GOD MODE] Starting native engine: ${ENGINE_PATH}...`);
 const sf = spawn(ENGINE_PATH, [], { stdio: ['pipe', 'pipe', 'pipe'] });
 
 let isReady = false;
+let currentJob = null; // { fen, depth, callbacks: [], t0, lastEval, lastMate, timeoutId }
+let pendingJob = null; // { fen, depth, callbacks: [], t0 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-//  REQUEST QUEUE — Prevents race conditions by serializing Stockfish access
-// ══════════════════════════════════════════════════════════════════════════════
-const requestQueue = [];
-let isProcessing = false;
+function startSearch(job) {
+    currentJob = job;
+    currentJob.lastEval = 0;
+    currentJob.lastMate = null;
 
-function enqueueRequest(fen, depth, multipv, callback) {
-    requestQueue.push({ fen, depth, multipv, callback });
-    processQueue();
-}
-
-function processQueue() {
-    if (isProcessing || requestQueue.length === 0) return;
-    isProcessing = true;
-    const { fen, depth, multipv, callback } = requestQueue.shift();
-    executeStockfish(fen, depth, multipv, (result) => {
-        callback(result);
-        isProcessing = false;
-        // Process next request in queue
-        if (requestQueue.length > 0) {
-            setImmediate(processQueue);
+    // Safety timeout: abort search if it hangs longer than 20 seconds
+    currentJob.timeoutId = setTimeout(() => {
+        if (currentJob === job) {
+            console.warn(`⚠️ [Stockfish 17] Search exceeded 20s, forcing stop`);
+            sf.stdin.write('stop\n');
         }
-    });
-}
+    }, 20000);
 
-// ══════════════════════════════════════════════════════════════════════════════
-//  STOCKFISH UCI COMMUNICATION — Collects MultiPV lines
-// ══════════════════════════════════════════════════════════════════════════════
-let currentResolve = null;
-let collectedPVs = [];  // Array of { pv: number, move: string, eval: number, mate: number|null }
-let currentMultiPV = 1;
+    sf.stdin.write(`position fen ${job.fen}\n`);
+    sf.stdin.write(`go depth ${job.depth}\n`);
+}
 
 sf.stdout.on('data', (chunk) => {
     const lines = chunk.toString().split('\n');
-    for (let line of lines) {
-        line = line.trim();
+    for (let raw of lines) {
+        const line = raw.trim();
         if (!line) continue;
 
         if (line === 'uciok') {
             sf.stdin.write('setoption name Threads value 4\n');
             sf.stdin.write('setoption name Hash value 128\n');
+            sf.stdin.write('setoption name MultiPV value 1\n');
+            sf.stdin.write('setoption name Skill Level value 20\n');
+            sf.stdin.write('setoption name Move Overhead value 10\n');
             sf.stdin.write('isready\n');
         } else if (line === 'readyok') {
             isReady = true;
-            console.log('✅ Stockfish 17 GOD MODE ready (4 threads, 128MB hash)');
-            console.log('   Listening on http://' + HOST + ':' + PORT);
-        } else if (line.startsWith('info ') && line.includes('score ') && line.includes(' pv ')) {
-            // Parse MultiPV info lines
-            const pvMatch = line.match(/multipv (\d+)/);
-            const pvNum = pvMatch ? parseInt(pvMatch[1], 10) : 1;
-            const cpMatch = line.match(/score cp (-?\d+)/);
-            const mateMatch = line.match(/score mate (-?\d+)/);
-            const pvMoves = line.match(/ pv (.+)/);
-
-            if (pvMoves) {
-                const firstMove = pvMoves[1].split(/\s+/)[0];
-                const evalVal = cpMatch ? parseInt(cpMatch[1], 10) / 100 : 0;
-                const mateVal = mateMatch ? parseInt(mateMatch[1], 10) : null;
-
-                // Update or insert PV entry (keep latest for each pv number)
-                const existing = collectedPVs.find(p => p.pv === pvNum);
-                if (existing) {
-                    existing.move = firstMove;
-                    existing.eval = evalVal;
-                    existing.mate = mateVal;
-                } else {
-                    collectedPVs.push({ pv: pvNum, move: firstMove, eval: evalVal, mate: mateVal });
-                }
+            console.log('⚡ Stockfish 17 GOD MODE ready (4 threads, 128MB hash, MultiPV 1, Skill Level 20)');
+            console.log(`   Listening on http://${HOST}:${PORT}`);
+        } else if (line.startsWith('info ') && line.includes('score ')) {
+            if (currentJob) {
+                const cpMatch = line.match(/score cp (-?\d+)/);
+                const mateMatch = line.match(/score mate (-?\d+)/);
+                if (cpMatch) currentJob.lastEval = parseInt(cpMatch[1], 10) / 100;
+                if (mateMatch) currentJob.lastMate = parseInt(mateMatch[1], 10);
             }
         } else if (line.startsWith('bestmove ')) {
             const parts = line.split(/\s+/);
-            const bestMove = parts[1];
+            const move = parts[1];
 
-            // Ensure bestmove is PV1 if not already collected
-            if (collectedPVs.length === 0) {
-                collectedPVs.push({ pv: 1, move: bestMove, eval: 0, mate: null });
-            } else if (collectedPVs[0].move !== bestMove) {
-                // bestmove overrides PV1
-                collectedPVs[0].move = bestMove;
+            if (currentJob) {
+                if (currentJob.timeoutId) clearTimeout(currentJob.timeoutId);
+                const dur = Date.now() - currentJob.t0;
+                const evalStr = currentJob.lastMate !== null
+                    ? `Mate in ${currentJob.lastMate}`
+                    : (currentJob.lastEval >= 0 ? `+${currentJob.lastEval.toFixed(2)}` : currentJob.lastEval.toFixed(2));
+
+                console.log(`⚡ [GOD MODE] Move: ${move} | Eval: ${evalStr} | Depth: ${currentJob.depth} | ${dur}ms`);
+
+                const payload = JSON.stringify({
+                    success: move && move !== '(none)',
+                    move: move && move !== '(none)' ? move : null,
+                    bestmove: `bestmove ${move}`,
+                    evaluation: currentJob.lastEval,
+                    mate: currentJob.lastMate,
+                    depth: currentJob.depth,
+                    durationMs: dur
+                });
+
+                for (const cb of currentJob.callbacks) {
+                    try { cb(payload); } catch (_) { }
+                }
+                currentJob = null;
             }
 
-            // Sort by PV number
-            collectedPVs.sort((a, b) => a.pv - b.pv);
-
-            if (currentResolve) {
-                const result = {
-                    moves: collectedPVs.map(p => ({
-                        move: p.move,
-                        eval: p.eval,
-                        mate: p.mate
-                    }))
-                };
-                currentResolve(result);
-                currentResolve = null;
+            // If a newer search was queued while this one finished, launch it immediately
+            if (pendingJob) {
+                const next = pendingJob;
+                pendingJob = null;
+                startSearch(next);
             }
         }
     }
@@ -125,37 +106,14 @@ sf.stderr.on('data', (chunk) => {
 
 sf.on('close', (code) => {
     console.log(`[Stockfish] Process exited with code ${code}`);
-    process.exit(code);
+    process.exit(code || 0);
 });
 
 // Initialize UCI protocol
 sf.stdin.write('uci\n');
 
-function executeStockfish(fen, depth, multipv, callback) {
-    collectedPVs = [];
-    currentResolve = callback;
-    currentMultiPV = multipv;
-
-    // Set MultiPV before each search (in case it changed)
-    sf.stdin.write(`setoption name MultiPV value ${multipv}\n`);
-    sf.stdin.write(`position fen ${fen}\n`);
-    sf.stdin.write(`go depth ${depth}\n`);
-
-    // Safety timeout — if Stockfish somehow hangs, don't block the queue forever
-    setTimeout(() => {
-        if (currentResolve === callback) {
-            console.warn(`[Stockfish] Timeout on depth ${depth}, forcing response`);
-            currentResolve = null;
-            callback({ moves: collectedPVs.length > 0 ? collectedPVs.map(p => ({ move: p.move, eval: p.eval, mate: p.mate })) : [] });
-        }
-    }, 30000);  // 30s hard safety limit
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-//  HTTP BRIDGE SERVER
-// ══════════════════════════════════════════════════════════════════════════════
+// HTTP Bridge Server
 const server = http.createServer((req, res) => {
-    // Enable CORS for userscript
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', '*');
@@ -166,38 +124,43 @@ const server = http.createServer((req, res) => {
         return;
     }
 
-    const parsed = url.parse(req.url, true);
+    const reqUrl = new URL(req.url, `http://${HOST}:${PORT}`);
 
-    // ── Health Check ────────────────────────────────────────────────────────
-    if (parsed.pathname === '/health') {
+    // Health
+    if (reqUrl.pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
             status: 'ok',
             ready: isReady,
-            engine: 'Stockfish 17 GOD MODE',
+            engine: 'Stockfish 17 GOD MODE (Pure 100%)',
             threads: 4,
             hash: 128,
-            port: PORT,
-            queueLength: requestQueue.length
+            multiPV: 1,
+            activeJob: !!currentJob
         }));
         return;
     }
 
-    // ── New Game (reset engine state) ───────────────────────────────────────
-    if (parsed.pathname === '/newgame') {
+    // New Game (reset hash table)
+    if (reqUrl.pathname === '/newgame') {
+        if (currentJob) {
+            if (currentJob.timeoutId) clearTimeout(currentJob.timeoutId);
+            sf.stdin.write('stop\n');
+            currentJob = null;
+        }
+        pendingJob = null;
         sf.stdin.write('ucinewgame\n');
         sf.stdin.write('isready\n');
-        console.log('[Stockfish] New game — hash table cleared');
+        console.log('🔄 [Stockfish 17] New game — hash table reset');
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, message: 'Engine state reset for new game' }));
+        res.end(JSON.stringify({ success: true, message: 'Stockfish 17 reset for new game' }));
         return;
     }
 
-    // ── Best Move (with MultiPV support) ────────────────────────────────────
-    if (parsed.pathname === '/bestmove') {
-        const fen = parsed.query.fen;
-        const depth = parseInt(parsed.query.depth, 10) || 15;
-        const multipv = Math.min(parseInt(parsed.query.multipv, 10) || 1, 5);
+    // Best Move
+    if (reqUrl.pathname === '/bestmove') {
+        const fen = reqUrl.searchParams.get('fen');
+        const depth = parseInt(reqUrl.searchParams.get('depth'), 10) || 15;
 
         if (!fen) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -207,35 +170,33 @@ const server = http.createServer((req, res) => {
 
         if (!isReady) {
             res.writeHead(503, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Engine still initializing' }));
+            res.end(JSON.stringify({ error: 'Stockfish 17 initializing...' }));
             return;
         }
 
-        const t0 = Date.now();
+        const sendReply = (payload) => {
+            if (!res.writableEnded) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(payload);
+            }
+        };
 
-        enqueueRequest(fen, depth, multipv, (result) => {
-            const dur = Date.now() - t0;
-            const moves = result.moves || [];
-            const best = moves[0] || { move: null, eval: 0, mate: null };
+        // If currently searching
+        if (currentJob) {
+            if (currentJob.fen === fen) {
+                // Same position requested again (duplicate query)
+                currentJob.callbacks.push(sendReply);
+                return;
+            } else {
+                // Board position changed! Preempt old search with new one immediately
+                pendingJob = { fen, depth, callbacks: [sendReply], t0: Date.now() };
+                sf.stdin.write('stop\n');
+                return;
+            }
+        }
 
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-                success: best.move !== null,
-                bestmove: best.move ? `bestmove ${best.move}` : null,
-                move: best.move,
-                depth,
-                evaluation: best.eval,
-                mate: best.mate,
-                durationMs: dur,
-                // MultiPV: all candidate moves ranked by Stockfish
-                candidates: moves.map((m, i) => ({
-                    rank: i + 1,
-                    move: m.move,
-                    eval: m.eval,
-                    mate: m.mate
-                }))
-            }));
-        });
+        // Idle — start search immediately
+        startSearch({ fen, depth, callbacks: [sendReply], t0: Date.now() });
         return;
     }
 
@@ -244,6 +205,6 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-    console.log(`🚀 Stockfish 17 GOD MODE Bridge Server on http://${HOST}:${PORT}`);
-    console.log(`   Endpoints: /bestmove?fen=...&depth=15&multipv=3 | /newgame | /health`);
+    console.log(`🚀 Stockfish 17 GOD MODE Server running on http://${HOST}:${PORT}`);
+    console.log(`   Endpoints: /bestmove?fen=...&depth=15 | /newgame | /health`);
 });
