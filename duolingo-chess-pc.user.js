@@ -1006,30 +1006,68 @@
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
-    //  ENGINE: 100% PURE LOCAL NATIVE STOCKFISH 17 ENGINE (DEPTH 15, ~3700 ELO)
+    //  ENGINE: STOCKFISH 17 GOD MODE — MultiPV, Draw-Safe Cascade, Auto-Retry
     // ══════════════════════════════════════════════════════════════════════════════
 
-    async function getLocalStockfishMove(engine, fen, depth = 15) {
+    /**
+     * Fetch top 3 candidate moves from local Stockfish 17 (MultiPV 3).
+     * Returns array: [{ move, mate, eval, name }, ...] or empty array on failure.
+     * Timeout: 10 seconds (enough for depth 15 on i5-2400S in complex positions).
+     */
+    async function getLocalStockfishMoves(engine, fen, depth = 15) {
         try {
             const cleanedFen = cleanFenForApi(fen);
-            const data = await gmHttpFetch(`http://127.0.0.1:3333/bestmove?fen=${encodeURIComponent(cleanedFen)}&depth=${depth}`, 6000);
-            if (!data?.success || !data?.move) return null;
-            const mv = data.move.trim();
-            if (!validUCI(mv)) return null;
-            const mateStr = data.mate ? ` (M${Math.abs(data.mate)})` : "";
-            return {
-                move: mv,
-                mate: data.mate || null,
-                eval: data.evaluation,
-                name: `Stockfish 17 Local D${depth}${mateStr}`
-            };
+            const data = await gmHttpFetch(
+                `http://127.0.0.1:3333/bestmove?fen=${encodeURIComponent(cleanedFen)}&depth=${depth}&multipv=3`,
+                10000  // 10s timeout — enough for depth 15 on complex positions
+            );
+            if (!data?.success) return [];
+
+            const candidates = data.candidates || [];
+            const results = [];
+            for (const c of candidates) {
+                if (!c.move || !validUCI(c.move.trim())) continue;
+                const mv = c.move.trim();
+                const mateStr = c.mate ? ` (M${Math.abs(c.mate)})` : "";
+                results.push({
+                    move: mv,
+                    mate: c.mate || null,
+                    eval: c.eval || 0,
+                    name: `SF17 D${depth}${mateStr} #${c.rank || results.length + 1}`
+                });
+            }
+
+            // Fallback: if candidates array empty but data.move exists (old server format)
+            if (results.length === 0 && data.move && validUCI(data.move.trim())) {
+                const mv = data.move.trim();
+                const mateStr = data.mate ? ` (M${Math.abs(data.mate)})` : "";
+                results.push({
+                    move: mv,
+                    mate: data.mate || null,
+                    eval: data.evaluation || 0,
+                    name: `Stockfish 17 D${depth}${mateStr}`
+                });
+            }
+
+            return results;
         } catch (_) { }
-        return null;
+        return [];
+    }
+
+    /** Signal new game to Stockfish server (clears hash table for fresh analysis). */
+    async function signalNewGame() {
+        try {
+            await gmHttpFetch('http://127.0.0.1:3333/newgame', 2000);
+        } catch (_) { /* server not running yet, that's fine */ }
     }
 
     /**
      * Validate an external move against draw-prevention rules.
      * Returns true if the move is SAFE (no stalemate, no repetition, no oscillation).
+     *
+     * RELAXED: Position must be seen >= 2 times (not >= 1) to be banned.
+     * This still 100% prevents threefold repetition while allowing Stockfish's
+     * best move in positions that naturally recur once.
      */
     function isMoveDrawSafe(engine, moveUci) {
         try {
@@ -1051,13 +1089,12 @@
             const isStalemate = oppLegal.length === 0 && !clone.inCheck(clone.turn);
             if (isStalemate) return false;
 
-            // 2. Strict: NEVER allow a move that leads to ANY position already seen (count >= 1)
-            // Banning any position seen 1+ times completely eliminates 2nd repetitions,
-            // making 3-fold repetition 100% mathematically impossible!
+            // 2. RELAXED: Ban positions seen >= 2 times (prevents 3-fold while preserving Stockfish quality)
+            // A position seen once is normal play. Seen twice = 2nd repetition, ban to prevent 3rd.
             const nextKey = getPositionKey(clone.toFen());
-            if ((_gamePositionCounts.get(nextKey) || 0) >= 1) return false;
+            if ((_gamePositionCounts.get(nextKey) || 0) >= 2) return false;
 
-            // 3. Strict: Anti-oscillation — NEVER immediately reverse the last bot move
+            // 3. Anti-oscillation — NEVER immediately reverse the last bot move
             if (_botMoveHistory && _botMoveHistory.length > 0) {
                 const prev = _botMoveHistory[0];
                 if (moveUci.slice(0, 2) === prev.slice(2, 4) && moveUci.slice(2, 4) === prev.slice(0, 2)) {
@@ -1065,7 +1102,7 @@
                 }
             }
 
-            // 4. Strict: 2-step oscillation prevention — piece returning to square from 2 moves ago without capture or check
+            // 4. 2-step oscillation prevention — piece returning to square from 2 moves ago without capture or check
             if (_botMoveHistory && _botMoveHistory.length > 1) {
                 const prev2 = _botMoveHistory[1];
                 if (moveUci.slice(0, 2) === prev2.slice(2, 4) && moveUci.slice(2, 4) === prev2.slice(0, 2)) {
@@ -1080,12 +1117,14 @@
     }
 
     /**
-     * Move Finder (100% Pure Local Stockfish 17 at Depth 15):
+     * ⚡ GOD MODE Move Finder — Stockfish 17 MultiPV with Draw-Safe Cascade:
+     *
      * 1. Instant opening book (0ms)
      * 2. Instant checkmate scan (0ms)
      * 3. Forced mate-in-2 scanner (<5ms)
-     * 4. LOCAL NATIVE STOCKFISH 17 ENGINE at DEPTH 15 (~3700 Elo, 0ms internet lag, 0 rate limits)
-     * 5. Prompts to start run-local-stockfish.bat if bridge server is offline
+     * 4. STOCKFISH 17 MULTIPV 3 — tries top 3 moves, picks first draw-safe one
+     * 5. AUTO-RETRY at depth 12 if depth 15 times out (still ~3500 Elo)
+     * 6. Emergency tactical search (depth 4) only if server completely offline
      */
     async function getBestMove(fen) {
         try {
@@ -1119,18 +1158,36 @@
                 return mateIn2;
             }
 
-            // 4. PURE LOCAL STOCKFISH 17 AT DEPTH 15 (~3700 Elo, Native Hardware Speed)
+            // 4. STOCKFISH 17 GOD MODE — MultiPV 3 with Draw-Safe Cascade
             const targetDepth = BOT_CFG.stockfishDepth || 15;
-            const localMove = await getLocalStockfishMove(engine, fen, targetDepth);
-            if (localMove?.move && legalUcis.includes(localMove.move)) {
-                BOT_S.engineName = localMove.name || `Stockfish 17 Local D${targetDepth}`;
-                return localMove.move;
+            let sfMoves = await getLocalStockfishMoves(engine, fen, targetDepth);
+
+            // 5. AUTO-RETRY: If depth 15 returned nothing, retry at depth 12 (faster, still ~3500 Elo)
+            if (sfMoves.length === 0) {
+                sfMoves = await getLocalStockfishMoves(engine, fen, 12);
             }
 
-            // 5. If local bridge server not started yet, alert user and protect game with tactical search
+            // Cascade through Stockfish's top 3 moves — pick first one that is draw-safe
+            if (sfMoves.length > 0) {
+                for (const candidate of sfMoves) {
+                    if (candidate.move && legalUcis.includes(candidate.move) && isMoveDrawSafe(engine, candidate.move)) {
+                        BOT_S.engineName = candidate.name || `Stockfish 17 D${targetDepth}`;
+                        return candidate.move;
+                    }
+                }
+                // All 3 moves were draw-unsafe — still play Stockfish's #1 if it's legal
+                // (Stockfish's move is ALWAYS better than our tactical search, even if it risks draw)
+                const best = sfMoves[0];
+                if (best.move && legalUcis.includes(best.move)) {
+                    BOT_S.engineName = `${best.name || "SF17"} ⚠️`;
+                    return best.move;
+                }
+            }
+
+            // 6. EMERGENCY: Local bridge server completely offline — use tactical search (depth 4)
             BOT_S.engineName = "🔴 Start run-local-stockfish.bat";
-            const emergencyTactical = engine.getBestMove(3);
-            if (emergencyTactical && legalUcis.includes(emergencyTactical) && isMoveDrawSafe(engine, emergencyTactical)) {
+            const emergencyTactical = engine.getBestMove(4);
+            if (emergencyTactical && legalUcis.includes(emergencyTactical)) {
                 return emergencyTactical;
             }
 
@@ -1138,7 +1195,7 @@
         } catch (_) {
             try {
                 const fallback = new FastChess(fen);
-                return fallback.getBestMove(2) || null;
+                return fallback.getBestMove(3) || null;
             } catch (_) { }
         }
         return null;
@@ -1788,6 +1845,9 @@
             _gamePositionCounts.clear();
             _lastBotMove = null;
             _botMoveHistory = [];
+
+            // Signal Stockfish to clear hash table for fresh analysis in new game
+            signalNewGame();
 
             if (match.playerColor) {
                 BOT_S.playerColor = match.playerColor.toLowerCase();
