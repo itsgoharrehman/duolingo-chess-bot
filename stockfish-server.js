@@ -17,8 +17,8 @@ console.log(`[Stockfish 17] Starting native engine: ${ENGINE_PATH}...`);
 const sf = spawn(ENGINE_PATH, [], { stdio: ['pipe', 'pipe', 'pipe'] });
 
 let isReady = false;
-let currentJob = null; // { fen, depth, callbacks: [], t0, lastEval, lastMate, timeoutId }
-let pendingJob = null; // { fen, depth, callbacks: [], t0 }
+let currentJob = null; // { fen, moves, startFen, searchmoves, depth, key, callbacks: [], t0, lastEval, lastMate, timeoutId }
+let pendingJob = null; // { fen, moves, startFen, searchmoves, depth, key, callbacks: [], t0 }
 
 function startSearch(job) {
     currentJob = job;
@@ -33,8 +33,20 @@ function startSearch(job) {
         }
     }, 20000);
 
-    sf.stdin.write(`position fen ${job.fen}\n`);
-    sf.stdin.write(`go depth ${job.depth}\n`);
+    if (job.moves && job.moves.trim()) {
+        const startPosCmd = (job.startFen && job.startFen !== 'startpos')
+            ? `position fen ${job.startFen} moves ${job.moves.trim()}`
+            : `position startpos moves ${job.moves.trim()}`;
+        sf.stdin.write(`${startPosCmd}\n`);
+    } else {
+        sf.stdin.write(`position fen ${job.fen}\n`);
+    }
+
+    if (job.searchmoves && job.searchmoves.trim()) {
+        sf.stdin.write(`go depth ${job.depth} searchmoves ${job.searchmoves.trim()}\n`);
+    } else {
+        sf.stdin.write(`go depth ${job.depth}\n`);
+    }
 }
 
 sf.stdout.on('data', (chunk) => {
@@ -156,11 +168,14 @@ const server = http.createServer((req, res) => {
     // Best Move
     if (reqUrl.pathname === '/bestmove') {
         const fen = reqUrl.searchParams.get('fen');
-        const depth = parseInt(reqUrl.searchParams.get('depth'), 10) || 15;
+        const moves = reqUrl.searchParams.get('moves');
+        const startFen = reqUrl.searchParams.get('startFen');
+        const searchmoves = reqUrl.searchParams.get('searchmoves');
+        const depth = parseInt(reqUrl.searchParams.get('depth'), 10) || 18;
 
-        if (!fen) {
+        if (!fen && !moves) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Missing fen parameter' }));
+            res.end(JSON.stringify({ error: 'Missing fen or moves parameter' }));
             return;
         }
 
@@ -177,22 +192,24 @@ const server = http.createServer((req, res) => {
             }
         };
 
+        const jobKey = `${fen || ''}_${moves || ''}_${searchmoves || ''}`;
+
         // If currently searching
         if (currentJob) {
-            if (currentJob.fen === fen) {
+            if (currentJob.key === jobKey) {
                 // Same position requested again (duplicate query)
                 currentJob.callbacks.push(sendReply);
                 return;
             } else {
-                // Board position changed! Preempt old search with new one immediately
-                pendingJob = { fen, depth, callbacks: [sendReply], t0: Date.now() };
+                // Board position or search constraints changed! Preempt old search with new one immediately
+                pendingJob = { fen, moves, startFen, searchmoves, depth, key: jobKey, callbacks: [sendReply], t0: Date.now() };
                 sf.stdin.write('stop\n');
                 return;
             }
         }
 
         // Idle — start search immediately
-        startSearch({ fen, depth, callbacks: [sendReply], t0: Date.now() });
+        startSearch({ fen, moves, startFen, searchmoves, depth, key: jobKey, callbacks: [sendReply], t0: Date.now() });
         return;
     }
 
@@ -202,5 +219,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, HOST, () => {
     console.log(`Stockfish 17 Server running on http://${HOST}:${PORT}`);
-    console.log(`   Endpoints: /bestmove?fen=...&depth=15 | /newgame | /health`);
+    console.log(`   Endpoints: /bestmove?fen=...&depth=18 | /newgame | /health`);
 });
