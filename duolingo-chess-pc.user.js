@@ -3,8 +3,10 @@
 // @namespace    duochess-pc
 // @version      6.0.0
 // @description  Complete rewrite: ultra-stable Duolingo Chess bot with Stockfish 16+, Lichess Cloud Eval, embedded engine fallback, zero sticking, zero stalemate, zero repetition draws, instant checkmate, and auto-match loop.
-// @match        https://www.duolingo.com/*
-// @match        https://*.duolingo.com/*
+// @match        https://www.duolingo.com/chess-matches*
+// @match        https://*.duolingo.com/chess-matches*
+// @match        https://www.duolingo.com/chess*
+// @match        https://*.duolingo.com/chess*
 // @run-at       document-start
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
@@ -26,7 +28,7 @@
 
     const BOT_CFG = {
         engine: "hybrid",
-        stockfishDepth: 18,
+        stockfishDepth: 15,
         clickDelay: 50,
         moveDelay: 50,
         thinkDelay: 10,
@@ -53,7 +55,7 @@
             const saved = JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
             if (saved.bot) Object.assign(BOT_CFG, saved.bot);
             if (saved.solver) Object.assign(SOL_CFG, saved.solver);
-            BOT_CFG.stockfishDepth = 18;
+            BOT_CFG.stockfishDepth = 15;
             if (BOT_CFG.clickDelay < 60) BOT_CFG.clickDelay = 70;
             if (BOT_CFG.moveDelay < 60) BOT_CFG.moveDelay = 70;
             if (SOL_CFG.clickDelay < 60) SOL_CFG.clickDelay = 70;
@@ -609,7 +611,7 @@
      * Supports searchmoves and move history for 100% threefold repetition elimination.
      * Returns: { move, eval, mate } or null on failure.
      */
-    async function getStockfishBestMove(fen, depth = 18, searchmoves = null, moves = null, startFen = null) {
+    async function getStockfishBestMove(fen, depth = 15, searchmoves = null, moves = null, startFen = null) {
         try {
             const cleanedFen = cleanFenForApi(fen);
             let url = `http://127.0.0.1:3333/bestmove?fen=${encodeURIComponent(cleanedFen)}&depth=${depth}`;
@@ -653,7 +655,7 @@
             if (!legalMoves || legalMoves.length === 0) return null;
             const legalUcis = legalMoves.map(m => engine.moveToUci(m));
 
-            const targetDepth = BOT_CFG.stockfishDepth || 18;
+            const targetDepth = BOT_CFG.stockfishDepth || 15;
 
             // ─── THREEFOLD REPETITION & OSCILLATION FILTER ───
             // For every legal move, simulate the resulting position and check its occurrence count in this match.
@@ -1986,6 +1988,11 @@
         }
     }
 
+    function isChessPage() {
+        const path = (window.location.pathname || "").toLowerCase();
+        return path.includes("chess");
+    }
+
     // ══════════════════════════════════════════════════════════════════════════════
     //  AUTO-PLAY & ACTIVE WATCHDOG LOOP
     // ══════════════════════════════════════════════════════════════════════════════
@@ -2000,6 +2007,19 @@
 
         while (true) {
             await sleep(POLL_MS);
+
+            // Only run when actively on a chess page
+            if (!isChessPage()) {
+                if (_panel) {
+                    _panel.remove();
+                    _panel = null;
+                }
+                await sleep(500);
+                continue;
+            } else if (!_panel && document.body) {
+                createPanel();
+                recoverState();
+            }
 
             // ─── PRIORITY 0: Active promotion modal on screen — resolve Queen immediately! ───
             const promoModal = findPromotionModal();

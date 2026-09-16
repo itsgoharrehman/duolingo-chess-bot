@@ -171,7 +171,7 @@ const server = http.createServer((req, res) => {
         const moves = reqUrl.searchParams.get('moves');
         const startFen = reqUrl.searchParams.get('startFen');
         const searchmoves = reqUrl.searchParams.get('searchmoves');
-        const depth = parseInt(reqUrl.searchParams.get('depth'), 10) || 18;
+        const depth = parseInt(reqUrl.searchParams.get('depth'), 10) || 15;
 
         if (!fen && !moves) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -219,5 +219,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, HOST, () => {
     console.log(`Stockfish 17 Server running on http://${HOST}:${PORT}`);
-    console.log(`   Endpoints: /bestmove?fen=...&depth=18 | /newgame | /health`);
+    console.log(`   Endpoints: /bestmove?fen=...&depth=15 | /newgame | /health`);
 });
