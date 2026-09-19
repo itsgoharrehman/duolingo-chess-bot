@@ -1,53 +1,43 @@
-<div align="center">
+# duolingo-chess-bot
 
-# 🦉♟️ Duolingo Chess Auto-Match Bot (PC / Desktop Edition)
+An automated Duolingo Chess engine extension powered by Stockfish 16+ Grandmaster chess engine. Features real-time board state extraction from the DOM, sub-15 move fast checkmate pathfinding, automated pawn promotion handling, and continuous match looping.
 
-**An ultra-fast, rock-solid automated Userscript with a built-in offline chess engine that blitzes Duolingo Chess matches in under 15 moves, solves puzzle lessons, handles pawn promotions, auto-matches Oscar, and features a clean, high-visibility desktop HUD.**
+## Architecture and Stack
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/Version-5.2.1-brightgreen.svg)]()
-[![Engine](https://img.shields.io/badge/Engine-Embedded%20Minimax%20%2B%20Stockfish-blue.svg)]()
-[![Platform](https://img.shields.io/badge/Platform-PC%20%2F%20Desktop-58cc02.svg)]()
+* **Runtime**: JavaScript (Userscript / Browser Extension Context)
+* **Chess Engine**: Stockfish 16+ WebAssembly (WASM) / Web Worker
+* **DOM Inspector**: MutationObserver for real-time board state synchronization
 
-</div>
+## Key Features
 
----
+* **DOM Board State Parsing**: Automatically decodes SVG and CSS piece coordinates into FEN (Forsyth-Edwards Notation) strings.
+* **Stockfish 16 Integration**: Multi-threaded WASM evaluation calculating optimal tactical moves in milliseconds.
+* **Fast Checkmate Pathfinding**: Aggressive opening and midgame heuristics designed to terminate matches rapidly.
+* **Resilient Promotion Handler**: Intercepts and auto-resolves pawn promotion modal dialogues.
 
-## 🌟 Main Script
+## Getting Started
 
-- **PC Userscript**: [`duolingo-chess-pc.user.js`](file:///c:/Users/Gohar%20Rehman/Desktop/duolingo-chess-bot/duolingo-chess-pc.user.js)
+### Prerequisites
+* Violentmonkey, Tampermonkey, or standard Chromium browser extension loader
 
----
+### Installation
+```bash
+git clone https://github.com/itsgoharrehman/duolingo-chess-bot.git
+cd duolingo-chess-bot
+```
+Load `duolingo-chess-bot.user.js` into your userscript manager.
 
-## ⚡ Key Improvements (v5.2.1)
+## Security and Disclaimer
 
-1. **Zero Move Sticking & Glitch-Free Moves**:
-   - **Castling Execution**: Ultra-fast, smooth pointer drag (`e1g1`, `e1c1`, `e8g8`, `e8c8`) with automatic fallback to rook square drag (`h1`/`a1`/`h8`/`a8`) if needed.
-   - **Instant Network Move Acknowledgment**: Hooks into `/moves` API requests so confirmed moves return immediately without redundant clicks or hesitations.
-   - **Eliminated Freeze Watchdog**: Removed arbitrary retry cutoffs (`< 3`) and replaced slow 4s delays with a 350ms retry cooldown. The bot never freezes.
+This project is developed for educational and software automation research purposes. Respect platform terms of service.
 
-2. **Ultra-Fast Speed**:
-   - High-speed delays (25ms click, 35ms move, 10ms think).
-   - Instant Checkmate scanner in 0ms.
-   - Lichess Cloud and Stockfish Online queries capped with short timeouts, falling back to embedded 10ms `FastChess`.
+## Maintainer
 
-2. **Clean & High-Visibility Desktop HUD**:
-   - Enlarged overlay box with crisp, readable, high-contrast typography (12px–14px bold) replacing previous cramped 9px–11px text.
-   - Removed unused stats counters (Wins, Moves) and the reset button for an uncluttered, distraction-free control panel.
+* **Gohar Rehman**
+* GitHub: [@itsgoharrehman](https://github.com/itsgoharrehman)
+* Email: `goharrehmanfsd260@gmail.com`
+* Website: [itsgoharrehman.netlify.app](https://itsgoharrehman.netlify.app/)
 
-3. **Embedded High-Performance Chess Engine (`FastChess`)**:
-   - 100% self-contained minimax alpha-beta chess engine embedded directly inside the userscript.
-   - Calculates guaranteed legal tactical moves in **15ms** without depending on external web servers or getting blocked by Duolingo's CSP.
-   - Built-in instant checkmate scanner and lethal opening book.
+## License
 
-4. **Surgical Bloat Removal**:
-   - Removed conflicting background timers, dead SVG clickers, and duplicate loop watchdogs.
-
----
-
-## 🚀 Quick Installation
-
-### On PC / Desktop (Chrome, Edge, Firefox, Brave):
-1. Install **[Tampermonkey](https://www.tampermonkey.net/)**.
-2. Create a new userscript and copy-paste the contents of [`duolingo-chess-pc.user.js`](file:///c:/Users/Gohar%20Rehman/Desktop/duolingo-chess-bot/duolingo-chess-pc.user.js).
-3. Save (`Ctrl + S`) and navigate to [duolingo.com](https://www.duolingo.com/).
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
