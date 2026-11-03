@@ -1,6 +1,20 @@
-# duolingo-chess-bot
+<div align="center">
+  <h1>duolingo-chess-bot</h1>
+  <p>High-performance Duolingo Chess automation userscript powered by local Stockfish 16+ engine, MutationObserver board synchronization, and auto-play heuristics.</p>
 
-[![Release](https://img.shields.io/badge/Release-v1.1.0-0969da?style=flat-square)](https://github.com/itsgoharrehman/duolingo-chess-bot/releases/tag/v1.1.0) [![JavaScript](https://img.shields.io/badge/JavaScript-ES6+-F7DF1E?style=flat-square&logo=javascript&logoColor=black)](https://developer.mozilla.org/en-US/docs/Web/JavaScript) [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org) [![Stockfish](https://img.shields.io/badge/Engine-Stockfish_16+-222222?style=flat-square&logo=lichess&logoColor=white)](https://stockfishchess.org) [![Tampermonkey](https://img.shields.io/badge/Userscript-Tampermonkey-00485B?style=flat-square&logo=tampermonkey&logoColor=white)](https://www.tampermonkey.net) [![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+  <p>
+    <a href="https://github.com/itsgoharrehman/duolingo-chess-bot/releases"><img src="https://img.shields.io/github/v/release/itsgoharrehman/duolingo-chess-bot?style=flat-square&logo=github&logoColor=white" alt="Release"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/itsgoharrehman/duolingo-chess-bot?style=flat-square&logo=opensourceinitiative&logoColor=white" alt="License"></a>
+    <img src="https://img.shields.io/badge/Runtime-JavaScript_ES6+-F7DF1E?style=flat-square&logo=javascript&logoColor=black" alt="JavaScript">
+    <img src="https://img.shields.io/badge/Engine-Stockfish_16+-222222?style=flat-square&logo=lichess&logoColor=white" alt="Stockfish">
+    <img src="https://img.shields.io/badge/Bridge-Node.js_18+-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js">
+    <img src="https://img.shields.io/badge/Userscript-Tampermonkey-00485B?style=flat-square&logo=tampermonkey&logoColor=white" alt="Tampermonkey">
+    <a href="https://github.com/itsgoharrehman/duolingo-chess-bot/stargazers"><img src="https://img.shields.io/github/stars/itsgoharrehman/duolingo-chess-bot?style=flat-square&logo=github&logoColor=white" alt="Stars"></a>
+    <a href="https://github.com/itsgoharrehman/duolingo-chess-bot/issues"><img src="https://img.shields.io/github/issues/itsgoharrehman/duolingo-chess-bot?style=flat-square&logo=github&logoColor=white" alt="Issues"></a>
+  </p>
+</div>
+
+---
 
 An automated chess solver and browser userscript engineered to interface with Duolingo Chess. Combines client-side DOM mutation tracking with a lightweight local Stockfish 16+ engine server to evaluate chess positions and execute optimal moves with millisecond latency.
 
