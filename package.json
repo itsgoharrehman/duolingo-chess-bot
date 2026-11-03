@@ -1,0 +1,28 @@
+{
+  "name": "duolingo-chess-bot",
+  "version": "1.1.0",
+  "description": "High-performance Duolingo Chess automation userscript powered by local Stockfish 16+ engine, MutationObserver board synchronization, and auto-play heuristics.",
+  "main": "stockfish-server.js",
+  "scripts": {
+    "start": "node stockfish-server.js",
+    "setup": "node setup-stockfish.js"
+  },
+  "keywords": [
+    "automation",
+    "browser-extension",
+    "chess",
+    "chess-bot",
+    "duolingo",
+    "game-bot",
+    "javascript",
+    "stockfish",
+    "tampermonkey",
+    "userscript"
+  ],
+  "author": "Gohar Rehman <goharrehmanfsd260@gmail.com> (https://github.com/itsgoharrehman)",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5"
+  }
+}
