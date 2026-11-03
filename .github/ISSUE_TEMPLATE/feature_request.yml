@@ -1,0 +1,23 @@
+name: Feature Request
+description: Propose an enhancement, heuristic optimization, or architectural improvement.
+title: "[FEATURE]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Suggest an improvement for the userscript or engine bridge server.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What limitation or scenario does this feature improve?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe your proposed implementation.
+    validations:
+      required: true
