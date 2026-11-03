@@ -1,0 +1,42 @@
+name: Bug Report
+description: Report a bug or issue with board parsing, server communication, or move execution.
+title: "[BUG]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please provide detailed reproduction information to resolve this issue.
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Browser, Tampermonkey version, and Operating System.
+      placeholder: "e.g., Chrome 124, Tampermonkey 5.1.0, Windows 11"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Exact steps to encounter the bug.
+      placeholder: |
+        1. Start stockfish-server.js
+        2. Navigate to Duolingo Chess
+        3. Observe board parsing error in console
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened? Provide browser console logs and terminal output.
+    validations:
+      required: true
