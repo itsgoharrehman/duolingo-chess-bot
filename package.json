@@ -22,7 +22,7 @@
   "author": "Gohar Rehman <goharrehmanfsd260@gmail.com> (https://github.com/itsgoharrehman)",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.19.2",
+    "express": "^5.3.0",
     "cors": "^2.8.5"
   }
 }
